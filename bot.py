@@ -338,6 +338,12 @@ async def handle_pesan(update: Update, context: CallbackContext):
         if not update.message.text:
             return await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
 
+        if len(update.message.text) > 70:
+            return await update.message.reply_text(
+                f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
+                f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
+            )
+
         # Flow: Langsung kirim ke channel
         try:
             message_sent = await context.bot.send_message(
