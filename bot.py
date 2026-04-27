@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 import re
@@ -9,12 +10,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from supabase import create_client
 
-# Tarik data dari Environment Variables
+# Tarik data dari Environment Variables (Heroku)
 try:
     BOT_TOKEN = os.environ.get('BOT_TOKEN')
     CHANNEL_ID = os.environ.get('CHANNEL_ID')
     
-    # Gunakan default 0 agar tidak error int(None) jika env belum di-set
+    # Gunakan default 0 agar tidak crash jika variabel belum diset di Heroku
     GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', 0))
     ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', 0))
     LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', 0))
@@ -486,6 +487,11 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
         try: await notif.delete()
         except: pass
     except Exception: await update.message.reply_text("❌ Gagal mengirim balasan.")
+
+# === FUNGSI TAMBAHAN UNTUK FIX ERROR NameError ===
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Pass karena post channel sudah dihandle melalui logic flow atau handle_discussion 
+    pass
 
 # === HANDLE GRUP DISKUSI ===
 async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
