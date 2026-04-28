@@ -322,17 +322,17 @@ async def handle_pesan(update: Update, context: CallbackContext):
         if re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower):
             return await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
 
-    # VALIDASI ANTI MENTION
-    ada_mention = False
-    if update.message.entities:
-        for ent in update.message.entities:
-            if ent.type == "mention": ada_mention = True; break
-    
-    if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
-        return await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
-
     # LOGIKA PENGIRIMAN MENFESS
     if MENFESS_MODE == "auto":
+
+        # VALIDASI ANTI MENTION
+        ada_mention = False
+        if update.message.entities:
+            for ent in update.message.entities:
+                if ent.type == "mention": ada_mention = True; break
+        
+        if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
+            return await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
         
         # Sesi auto: HANYA TEKS, NO MEDIA
         if not update.message.text:
