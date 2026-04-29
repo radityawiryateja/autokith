@@ -352,7 +352,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
     context.user_data['teks_menfess'] = update.message.text
     context.user_data['entities'] = update.message.entities or []
 
-    await update.message.reply_text("⏳ Teks diterima! Sekarang kirimkan **username** kamu untuk di-hyperlink (contoh: radit atau @radit).\n\n*Ketik /cancel untuk membatalkan.*", parse_mode="Markdown")
+    await update.message.reply_text("⏳ Teks diterima! Sekarang kirimkan **username** kamu untuk di-hyperlink (contoh: monk atau @monk).\n\n*Ketik /cancel untuk membatalkan.*", parse_mode="Markdown")
     return WAITING_USERNAME
 
 async def handle_username(update: Update, context: CallbackContext):
