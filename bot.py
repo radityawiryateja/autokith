@@ -755,4 +755,14 @@ def main():
     # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review))
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
-    application.add_handler(MessageHandler(filters.
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
+    
+    # Message handler untuk file, media dll (diluar conversation handler)
+    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.TEXT, handle_pesan))
+
+    logger.info("✅ Membangun bot selesai. Menjalankan polling...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
+
+if __name__ == '__main__':
+    main()
