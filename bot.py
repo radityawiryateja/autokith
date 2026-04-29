@@ -282,6 +282,9 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    display_name = f"@{username}" if username else first_name
 
     # Cek Blokir
     if user_id in CACHE_BANNED_USERS:
@@ -317,43 +320,75 @@ async def handle_pesan(update: Update, context: CallbackContext):
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
         return ConversationHandler.END
 
-    pesan_teks = update.message.text or ""
+    pesan_teks = update.message.text or update.message.caption or ""
     pesan_teks_lower = pesan_teks.lower()
 
-    # Validasi input harus teks
-    if not update.message.text:
-        await update.message.reply_text("❌ Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
-        return ConversationHandler.END
-
-    if len(update.message.text) > 70:
-        await update.message.reply_text(
-            f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
-            f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
-        )
-        return ConversationHandler.END
-
-    # VALIDASI BANNED WORDS
+    # VALIDASI BANNED WORDS (Berlaku buat semua mode)
     for bw in CACHE_BAD_WORDS:
         if re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower):
             await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
             return ConversationHandler.END
 
-    # VALIDASI ANTI MENTION
-    ada_mention = False
-    if update.message.entities:
-        for ent in update.message.entities:
-            if ent.type == "mention": ada_mention = True; break
-    
-    if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
-        await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
+    # LOGIKA PENGIRIMAN MENFESS
+    if MENFESS_MODE == "auto":
+        # Sesi auto: HANYA TEKS, NO MEDIA
+        if not update.message.text:
+            await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
+            return ConversationHandler.END
+
+        if len(update.message.text) > 70:
+            await update.message.reply_text(
+                f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
+                f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
+            )
+            return ConversationHandler.END
+
+        # VALIDASI ANTI MENTION
+        ada_mention = False
+        if update.message.entities:
+            for ent in update.message.entities:
+                if ent.type == "mention": ada_mention = True; break
+        
+        if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
+            await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
+            return ConversationHandler.END
+
+        # Simpan state ke context untuk input username berikutnya
+        context.user_data['teks_menfess'] = update.message.text
+        context.user_data['entities'] = update.message.entities or []
+
+        await update.message.reply_text("⏳ Teks diterima! Sekarang kirimkan **username** kamu untuk di-hyperlink (contoh: radit atau @radit).\n\n*Ketik /cancel untuk membatalkan.*", parse_mode="Markdown")
+        return WAITING_USERNAME
+
+    else:
+        # Flow MANUAL REVIEW KE ADMIN GRUP (Persis kayak awal)
+        try:
+            fw_msg = await context.bot.copy_message(chat_id=ADMIN_GROUP_ID, from_chat_id=user_id, message_id=update.message.message_id)
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{update.message.message_id}"),
+                    InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{update.message.message_id}")
+                ],
+                [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{update.message.message_id}")]
+            ]
+
+            review_text = f"🚨 *REVIEW MENFESS*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`"
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=review_text,
+                reply_to_message_id=fw_msg.message_id,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+            await update.message.reply_text("⏳ Menfess kamu sedang masuk ke antrean admin untuk direview. Mohon tunggu ya!")
+        except Exception as e:
+            logger.error(f"Error kirim manual review: {e}")
+            await update.message.reply_text("❌ Gagal mengirim menfess ke admin review.")
+            
         return ConversationHandler.END
 
-    # Simpan state ke context
-    context.user_data['teks_menfess'] = update.message.text
-    context.user_data['entities'] = update.message.entities or []
-
-    await update.message.reply_text("⏳ Teks diterima! Sekarang kirimkan **username** kamu untuk di-hyperlink (contoh: monk atau @monk).\n\n*Ketik /cancel untuk membatalkan.*", parse_mode="Markdown")
-    return WAITING_USERNAME
 
 async def handle_username(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -378,65 +413,32 @@ async def handle_username(update: Update, context: CallbackContext):
     
     final_entities = original_entities + [invisible_link]
 
-    if MENFESS_MODE == "auto":
+    try:
+        message_sent = await context.bot.send_message(
+            chat_id=CHANNEL_ID, 
+            text=final_text,
+            entities=final_entities,
+            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
+        )
+
+        CACHE_COMSECT_OFF.add(message_sent.message_id)
+
+        keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
+        await update.message.reply_text("Pesan kamu telah dikirim ke channel! 🪶", reply_markup=InlineKeyboardMarkup(keyboard))
+        
         try:
-            message_sent = await context.bot.send_message(
-                chat_id=CHANNEL_ID, 
-                text=final_text,
-                entities=final_entities,
-                link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
-            )
+            supabase.table("menfess_map").insert({
+                "post_id": message_sent.message_id, 
+                "sender_user_id": user_id
+            }).execute()
+        except Exception as e: logger.error(f"DB Error Auto: {e}")
 
-            CACHE_COMSECT_OFF.add(message_sent.message_id)
+        log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
+        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]))
 
-            keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
-            await update.message.reply_text("Pesan kamu telah dikirim ke channel! 🪶", reply_markup=InlineKeyboardMarkup(keyboard))
-            
-            try:
-                supabase.table("menfess_map").insert({
-                    "post_id": message_sent.message_id, 
-                    "sender_user_id": user_id
-                }).execute()
-            except Exception as e: logger.error(f"DB Error Auto: {e}")
-
-            log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
-            await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]))
-
-        except Exception as e:
-            logger.error(f"Error direct forward: {e}")
-            await update.message.reply_text("❌ Terjadi kesalahan saat mengirim menfess.")
-            
-    else:
-        # MANUAL MODE
-        try:
-            fw_msg = await context.bot.send_message(
-                chat_id=ADMIN_GROUP_ID, 
-                text=final_text,
-                entities=final_entities,
-                link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
-            )
-
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{fw_msg.message_id}"),
-                    InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{fw_msg.message_id}")
-                ],
-                [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{fw_msg.message_id}")]
-            ]
-
-            review_text = f"🚨 *REVIEW MENFESS*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`"
-            await context.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=review_text,
-                reply_to_message_id=fw_msg.message_id,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
-
-            await update.message.reply_text("⏳ Menfess kamu sedang masuk ke antrean admin untuk direview. Mohon tunggu ya!")
-        except Exception as e:
-            logger.error(f"Error kirim manual review: {e}")
-            await update.message.reply_text("❌ Gagal mengirim menfess ke admin review.")
+    except Exception as e:
+        logger.error(f"Error direct forward: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengirim menfess.")
             
     context.user_data.clear()
     return ConversationHandler.END
@@ -740,7 +742,7 @@ def main():
     application.add_handler(CommandHandler("deletecommand", delete_command))
     application.add_handler(CommandHandler("settings", settings))
 
-    # Conversation Handler untuk Menfess
+    # Conversation Handler untuk Menfess (Hanya masuk sini kalau AUTO)
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_pesan)],
         states={
@@ -753,11 +755,4 @@ def main():
     # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review))
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
-    application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
-
-    logger.info("✅ Membangun bot selesai. Menjalankan polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
-
-if __name__ == '__main__':
-    main()
+    application.add_handler(MessageHandler(filters.
