@@ -6,8 +6,8 @@ import markdown
 import os
 import asyncio
 
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, CallbackContext
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
 from supabase import create_client
 
 # Tarik data dari Environment Variables (Heroku)
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 bot_active = True
 MENFESS_MODE = "auto" # Cache default
+
+WAITING_USERNAME = 1
 
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -271,16 +273,20 @@ async def start(update: Update, context: CallbackContext):
         keyboard = [[InlineKeyboardButton("Join Channels", url=f"https://t.me/{c[1:]}")] for c in required_channels]
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
+# === ALUR MENFESS (CONVERSATION HANDLER) ===
 async def handle_pesan(update: Update, context: CallbackContext):
     global bot_active, MENFESS_MODE
-    if update.effective_chat.type != "private": return
-    if not bot_active: return await update.message.reply_text("Bot sedang dipause oleh admin.")
+    if update.effective_chat.type != "private": return ConversationHandler.END
+    if not bot_active: 
+        await update.message.reply_text("Bot sedang dipause oleh admin.")
+        return ConversationHandler.END
 
     user_id = update.effective_user.id
 
     # Cek Blokir
     if user_id in CACHE_BANNED_USERS:
-        return await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
+        await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
+        return ConversationHandler.END
 
     # === BALASAN ANONIM VIA TEKS TERSEMBUNYI ===
     if update.message.reply_to_message:
@@ -301,64 +307,91 @@ async def handle_pesan(update: Update, context: CallbackContext):
                         parse_mode="Markdown"
                     )
                 await update.message.reply_text("✅ Balasan anonim berhasil dikirim ke pengomentar!")
-                return
             except Exception as e:
                 logger.error(f"Gagal memproses balasan anonim: {e}")
                 await update.message.reply_text("❌ Gagal mengirim balasan anonim, mungkin komentar aslinya dihapus.")
-                return
+            return ConversationHandler.END
 
     if not await check_subscription(user_id, context):
         keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{c[1:]}")] for c in required_channels]
-        return await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+        await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+        return ConversationHandler.END
 
-    username = update.effective_user.username
-    first_name = update.effective_user.first_name
-    display_name = f"@{username}" if username else first_name
-    pesan_teks = update.message.text or update.message.caption or ""
+    pesan_teks = update.message.text or ""
     pesan_teks_lower = pesan_teks.lower()
+
+    # Validasi input harus teks
+    if not update.message.text:
+        await update.message.reply_text("❌ Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
+        return ConversationHandler.END
+
+    if len(update.message.text) > 70:
+        await update.message.reply_text(
+            f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
+            f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
+        )
+        return ConversationHandler.END
 
     # VALIDASI BANNED WORDS
     for bw in CACHE_BAD_WORDS:
         if re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower):
-            return await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
+            await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
+            return ConversationHandler.END
 
-    # LOGIKA PENGIRIMAN MENFESS
+    # VALIDASI ANTI MENTION
+    ada_mention = False
+    if update.message.entities:
+        for ent in update.message.entities:
+            if ent.type == "mention": ada_mention = True; break
+    
+    if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
+        await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
+        return ConversationHandler.END
+
+    # Simpan state ke context
+    context.user_data['teks_menfess'] = update.message.text
+    context.user_data['entities'] = update.message.entities or []
+
+    await update.message.reply_text("⏳ Teks diterima! Sekarang kirimkan **username** kamu untuk di-hyperlink (contoh: radit atau @radit).\n\n*Ketik /cancel untuk membatalkan.*", parse_mode="Markdown")
+    return WAITING_USERNAME
+
+async def handle_username(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    display_name = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+    
+    target_username = update.message.text.strip().replace("@", "")
+    teks_asli = context.user_data.get('teks_menfess', "")
+    original_entities = context.user_data.get('entities', [])
+
+    # Tambah zero-width space
+    final_text = teks_asli + "\u200B"
+    
+    # Kalkulasi offset Telegram
+    offset = len(teks_asli.encode('utf-16-le')) // 2
+    
+    invisible_link = MessageEntity(
+        type=MessageEntity.TEXT_LINK, 
+        offset=offset, 
+        length=1, 
+        url=f"https://t.me/{target_username}"
+    )
+    
+    final_entities = original_entities + [invisible_link]
+
     if MENFESS_MODE == "auto":
-
-        # VALIDASI ANTI MENTION
-        ada_mention = False
-        if update.message.entities:
-            for ent in update.message.entities:
-                if ent.type == "mention": ada_mention = True; break
-        
-        if ada_mention or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
-            return await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
-        
-        # Sesi auto: HANYA TEKS, NO MEDIA
-        if not update.message.text:
-            return await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
-
-        if len(update.message.text) > 70:
-            return await update.message.reply_text(
-                f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
-                f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
-            )
-
-        # Flow: Langsung kirim ke channel
         try:
             message_sent = await context.bot.send_message(
-                chat_id=CHANNEL_ID, text=update.message.text,
-                entities=update.message.entities,
+                chat_id=CHANNEL_ID, 
+                text=final_text,
+                entities=final_entities,
                 link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
             )
 
-            # SIMPAN KE CACHE LOKAL UNTUK HAPUS COMSECT INSTAN
             CACHE_COMSECT_OFF.add(message_sent.message_id)
 
             keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
             await update.message.reply_text("Pesan kamu telah dikirim ke channel! 🪶", reply_markup=InlineKeyboardMarkup(keyboard))
             
-            # Simpan data asli ke DB (Tanpa kolom comsect_on)
             try:
                 supabase.table("menfess_map").insert({
                     "post_id": message_sent.message_id, 
@@ -366,24 +399,29 @@ async def handle_pesan(update: Update, context: CallbackContext):
                 }).execute()
             except Exception as e: logger.error(f"DB Error Auto: {e}")
 
-            log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n💬 Pesan: {update.message.text}"
+            log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
             await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]))
 
         except Exception as e:
             logger.error(f"Error direct forward: {e}")
             await update.message.reply_text("❌ Terjadi kesalahan saat mengirim menfess.")
-
+            
     else:
-        # Flow: MANUAL REVIEW KE ADMIN GRUP
+        # MANUAL MODE
         try:
-            fw_msg = await context.bot.copy_message(chat_id=ADMIN_GROUP_ID, from_chat_id=user_id, message_id=update.message.message_id)
+            fw_msg = await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID, 
+                text=final_text,
+                entities=final_entities,
+                link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
+            )
 
             keyboard = [
                 [
-                    InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{update.message.message_id}"),
-                    InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{update.message.message_id}")
+                    InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{fw_msg.message_id}"),
+                    InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{fw_msg.message_id}")
                 ],
-                [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{update.message.message_id}")]
+                [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{fw_msg.message_id}")]
             ]
 
             review_text = f"🚨 *REVIEW MENFESS*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`"
@@ -399,6 +437,14 @@ async def handle_pesan(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"Error kirim manual review: {e}")
             await update.message.reply_text("❌ Gagal mengirim menfess ke admin review.")
+            
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_menfess(update: Update, context: CallbackContext):
+    context.user_data.clear()
+    await update.message.reply_text("✅ Pengiriman menfess dibatalkan.")
+    return ConversationHandler.END
 
 # === HANDLER TOMBOL REVIEW (SETUJU/TOLAK) ===
 async def handle_callback_review(update: Update, context: CallbackContext):
@@ -440,7 +486,7 @@ async def handle_callback_review(update: Update, context: CallbackContext):
                 log_msg = f"📌 Log Menfess (Manual Approved):\n🆔 Pengirim ID: `{user_id}`\n⚙️ Comsect: {'ON' if comsect_on else 'OFF'}"
                 await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, parse_mode="Markdown")
 
-                # Simpan data asli ke DB (Tanpa kolom comsect_on)
+                # Simpan data asli ke DB
                 try:
                     supabase.table("menfess_map").insert({
                         "post_id": sent_msg.message_id, 
@@ -466,7 +512,8 @@ async def handle_callback_review(update: Update, context: CallbackContext):
             await context.bot.send_message(chat_id=user_id, text=warning_text, parse_mode="Markdown")
 
 async def handle_admin_reply(update: Update, context: CallbackContext):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not update.message.reply_to_message: return
+    # Cek apakah ini di ADMIN GRUP atau LOG GRUP
+    if update.effective_chat.id not in [ADMIN_GROUP_ID, LOG_GROUP_ID] or not update.message.reply_to_message: return
 
     match = re.search(r"ID(?:\s*Pengguna)?:?\s*(\d+)", update.message.reply_to_message.text or update.message.reply_to_message.caption or "")
     if not match: return
@@ -487,7 +534,7 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
         return
 
     try:
-        await context.bot.copy_message(chat_id=user_id, from_chat_id=ADMIN_GROUP_ID, message_id=update.message.message_id)
+        await context.bot.copy_message(chat_id=user_id, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
         notif = await update.message.reply_text("✅ Balasan telah dikirim ke user.")
         await asyncio.sleep(5)
         try: await notif.delete()
@@ -693,12 +740,21 @@ def main():
     application.add_handler(CommandHandler("deletecommand", delete_command))
     application.add_handler(CommandHandler("settings", settings))
 
-    # Handler Utama & Grup
+    # Conversation Handler untuk Menfess
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_pesan)],
+        states={
+            WAITING_USERNAME: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_username)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_menfess)]
+    )
+    application.add_handler(conv_handler)
+
+    # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review))
-    application.add_handler(MessageHandler(filters.ALL & filters.Chat(ADMIN_GROUP_ID), handle_admin_reply))
+    application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
-    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_pesan))
 
     logger.info("✅ Membangun bot selesai. Menjalankan polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
