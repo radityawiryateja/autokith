@@ -517,7 +517,7 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
     # Cek apakah ini di ADMIN GRUP atau LOG GRUP
     if update.effective_chat.id not in [ADMIN_GROUP_ID, LOG_GROUP_ID] or not update.message.reply_to_message: return
 
-    match = re.search(r"ID(?:\s*Pengguna)?:?\s*(\d+)", update.message.reply_to_message.text or update.message.reply_to_message.caption or "")
+    match = re.search(r"ID(?:\s*Pengguna)?:?\s*[`]*(\d+)", update.message.reply_to_message.text or update.message.reply_to_message.caption or "")
     if not match: return
 
     user_id = int(match.group(1))
