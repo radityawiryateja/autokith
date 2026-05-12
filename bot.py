@@ -93,10 +93,30 @@ async def update_banned_users_cache():
     except Exception as e:
         logger.error(f"Gagal memuat banned users: {e}")
 
+async def check_system_tools():
+    """Mengecek apakah FFmpeg dan ExifTool sudah terinstal di server."""
+    tools = {
+        "FFmpeg": "ffmpeg",
+        "ExifTool": "exiftool"
+    }
+    
+    for name, cmd in tools.items():
+        path = shutil.which(cmd)
+        if path:
+            logger.info(f"🚀 {name} terdeteksi di: {path}")
+        else:
+            # Kita pakai warning biar bot nggak mati, tapi kita tahu ada yang kurang
+            logger.warning(f"⚠️ {name} TIDAK ditemukan! Fitur /live bakal error.")
+
 async def on_startup(application: Application):
     try:
         me = await application.bot.get_me()
         logger.info(f"✅ Bot siap: @{me.username} (id={me.id})")
+
+        # 2. Cek Peralatan Tempur (FFmpeg & ExifTool)
+        await check_system_tools()
+        
+        # 3. Load semua cache dari Database
         await update_settings_cache()
         await update_hashtags_cache()
         await update_badwords_cache()
