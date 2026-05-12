@@ -120,12 +120,24 @@ async def check_subscription(user_id, context: CallbackContext):
     return True
 
 # === HELPER: MANAJEMEN KOIN ===
+# kith_coins = saldo saat ini (boleh berkurang kalau dipakai belanja)
+# total_kith_coins = total koin yang pernah diperoleh (untuk leaderboard, tidak berkurang saat belanja)
 async def add_kith_coins(user_id: int, amount: int):
     try:
-        response = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
-        current_balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+        response = supabase.table("users").select("kith_coins, total_kith_coins").eq("user_id", user_id).execute()
+        row = response.data[0] if hasattr(response, 'data') and response.data else {}
+
+        current_balance = row.get("kith_coins") if row.get("kith_coins") is not None else 0
+        current_total = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else current_balance
+
         new_balance = current_balance + amount
-        supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
+        new_total = current_total + amount
+
+        supabase.table("users").update({
+            "kith_coins": new_balance,
+            "total_kith_coins": new_total
+        }).eq("user_id", user_id).execute()
+
         return new_balance
     except Exception as e:
         logger.error(f"Gagal tambah koin untuk {user_id}: {e}")
@@ -137,14 +149,17 @@ async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     
     try:
-        res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
-        coins = res.data[0].get("kith_coins") if res.data else 0
+        res = supabase.table("users").select("kith_coins, total_kith_coins").eq("user_id", user_id).execute()
+        row = res.data[0] if res.data else {}
+        coins = row.get("kith_coins") if row.get("kith_coins") is not None else 0
+        total_coins = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else coins
         
         text = (
             f"👤 *PROFIL KAMU*\n\n"
             f"🆔 ID: `{user_id}`\n"
             f"🏷️ Username: @{username}\n"
-            f"🪙 Kith-Coins: *{coins}*\n"
+            f"🪙 Saldo Kith-Coins: *{coins}*\n"
+            f"🏆 Total Koin Diperoleh: *{total_coins}*\n"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
@@ -153,17 +168,17 @@ async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === FITUR LEADERBOARD (UPDATE) ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Panggil user_id aja dari database, nggak perlu username-nya
-        res = supabase.table("users").select("user_id, kith_coins").order("kith_coins", desc=True).limit(10).execute()
+        # Leaderboard pakai total_kith_coins, bukan saldo saat ini, supaya tidak turun saat koin dipakai belanja
+        res = supabase.table("users").select("user_id, kith_coins, total_kith_coins").order("total_kith_coins", desc=True).limit(10).execute()
         if not res.data:
             return await update.message.reply_text("Belum ada data pemain.")
         
-        text = "🏆 *LEADERBOARD KITH-COINS* 🏆\n\n"
+        text = "🏆 *LEADERBOARD TOTAL KITH-COINS* 🏆\n\n"
         
         # Looping untuk ngecek ke server Telegram satu per satu
         for i, row in enumerate(res.data):
             user_id = row.get("user_id")
-            coins = row.get("kith_coins", 0)
+            coins = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else row.get("kith_coins", 0)
             
             try:
                 # get_chat() ini fungsinya nangkep profil terbaru langsung dari API Telegram
@@ -181,7 +196,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             text += f"{i+1}. {display_name} - *{coins}* Coins\n"
         
-        text += "\nTerus aktif dan kumpulkan koin sebanyak-banyaknya!"
+        text += "\nLeaderboard dihitung dari total koin yang pernah diperoleh, bukan saldo saat ini."
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Gagal memuat leaderboard: {e}")
@@ -882,7 +897,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         cara_main = (
             "📜 *TATA CARA MAIN:*\n"
             "1. Cek kata rahasia kamu di DM bot. Jangan kasih tahu siapa pun.\n"
-            "2. Tiap ronde, ketik `/vote [deskripsi]` disini.\n"
+            "2. Tiap ronde, ketik `/vote [deskripsi]` di grup sesuai giliran.\n"
             "3. *Dilarang menyebut kata yang kamu pegang secara gamblang/langsung.*\n"
             "4. Sebutkan ciri-ciri, fungsi, suasana, rasa, bentuk, atau petunjuk halus dari kata itu.\n"
             "5. Setelah 5 ronde, vote siapa yang paling mencurigakan dengan `/sus @username`."
@@ -1091,10 +1106,13 @@ async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for uid, count in user_counts.items():
             reward_coins = count * 50
             try:
-                user_res = supabase.table("users").select("kith_coins").eq("user_id", uid).execute()
-                current_coins = user_res.data[0].get("kith_coins") if hasattr(user_res, 'data') and user_res.data and user_res.data[0].get("kith_coins") is not None else 0
+                user_res = supabase.table("users").select("kith_coins, total_kith_coins").eq("user_id", uid).execute()
+                row = user_res.data[0] if hasattr(user_res, 'data') and user_res.data else {}
+                current_coins = row.get("kith_coins") if row.get("kith_coins") is not None else 0
+                current_total = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else current_coins
                 new_balance = current_coins + reward_coins
-                supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", uid).execute()
+                new_total = current_total + reward_coins
+                supabase.table("users").update({"kith_coins": new_balance, "total_kith_coins": new_total}).eq("user_id", uid).execute()
                 
                 notif_text = (
                     f"🎉 *Kejutan Kith-Coins Retroaktif!*\n\n"
