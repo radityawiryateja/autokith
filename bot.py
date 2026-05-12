@@ -871,7 +871,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             role = "Undercover" if pid == undercover_id else "Civilian"
             kata = word_pair['word2'] if pid == undercover_id else word_pair['word1']
             try:
-                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", reply_markup=btn_grup, parse_mode="Markdown")
+                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* ???\n🤫 *Katamu:* *{kata}*", reply_markup=btn_grup, parse_mode="Markdown")
             except Exception: pass
 
         urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
