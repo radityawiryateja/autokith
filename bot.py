@@ -1086,6 +1086,33 @@ async def settings(update: Update, context: CallbackContext):
         f"💻 *Commands:*\n{commands_text}", parse_mode="Markdown"
     )
 
+async def refresh_total_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    try:
+        res = supabase.table("users").select("user_id, kith_coins, total_kith_coins").execute()
+
+        updated = 0
+
+        for user in res.data:
+            total = user.get("total_kith_coins")
+            current = user.get("kith_coins", 0)
+
+            if total is None or total == 0:
+                supabase.table("users").update({
+                    "total_kith_coins": current
+                }).eq("user_id", user["user_id"]).execute()
+
+                updated += 1
+
+        await update.message.reply_text(
+            f"✅ Refresh total coin selesai!\nUser diupdate: {updated}"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+        
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID: 
         return
@@ -1147,6 +1174,7 @@ def main():
     application.add_handler(CommandHandler('close', close_bot))
     application.add_handler(CommandHandler('grupid', get_group_id))
     application.add_handler(CommandHandler('setrequired', set_required_channels))
+    application.add_handler(CommandHandler('refresh_totalkoin', refresh_total_coin))
     application.add_handler(CommandHandler('refreshcoin', refresh_coin))
 
     # Fitur Profil & Leaderboard
@@ -1159,6 +1187,7 @@ def main():
     application.add_handler(CommandHandler('vote', submit_word)) # Pemain submit kata dengan /vote
     application.add_handler(CommandHandler('sus', sus_vote))     # Pemain menuduh target dengan /sus
     application.add_handler(CommandHandler('revealrole', reveal_role))
+    
     
     # Tangkap klik Gabung / Mulai game
     application.add_handler(CallbackQueryHandler(handle_uc_callback, pattern="^uc_"))
