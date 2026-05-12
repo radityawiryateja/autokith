@@ -150,22 +150,41 @@ async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text("❌ Gagal mengambil data profil.")
 
+# === FITUR LEADERBOARD (UPDATE) ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Ambil Top 10 Player dengan koin terbanyak
-        res = supabase.table("users").select("username, kith_coins").order("kith_coins", desc=True).limit(10).execute()
+        # Panggil user_id aja dari database, nggak perlu username-nya
+        res = supabase.table("users").select("user_id, kith_coins").order("kith_coins", desc=True).limit(10).execute()
         if not res.data:
             return await update.message.reply_text("Belum ada data pemain.")
         
         text = "🏆 *LEADERBOARD KITH-COINS* 🏆\n\n"
+        
+        # Looping untuk ngecek ke server Telegram satu per satu
         for i, row in enumerate(res.data):
-            username = row.get("username") or "Anonim"
+            user_id = row.get("user_id")
             coins = row.get("kith_coins", 0)
-            text += f"{i+1}. @{username} - *{coins}* Coins\n"
+            
+            try:
+                # get_chat() ini fungsinya nangkep profil terbaru langsung dari API Telegram
+                chat = await context.bot.get_chat(user_id)
+                
+                # Cek apakah dia punya username
+                if chat.username:
+                    display_name = f"@{chat.username}"
+                else:
+                    # Kalau nggak punya username, pakai nama depannya aja
+                    display_name = f"{chat.first_name}"
+            except Exception:
+                # Kalau gagal (misalnya akunnya udah dihapus/delete account)
+                display_name = f"👤 User ID: {user_id}"
+            
+            text += f"{i+1}. {display_name} - *{coins}* Coins\n"
         
         text += "\nTerus aktif dan kumpulkan koin sebanyak-banyaknya!"
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
+        logger.error(f"Gagal memuat leaderboard: {e}")
         await update.message.reply_text("❌ Gagal mengambil data leaderboard.")
 
 # === FITUR BELI TITLE ===
