@@ -5,6 +5,9 @@ import re
 import markdown
 import os
 import random
+import uuid
+import subprocess
+import cv2
 import asyncio
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
@@ -1068,6 +1071,67 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
     )
 
+async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Cek apakah ada video di pesan tersebut atau di pesan yang di-reply
+    video = None
+    if update.message.video:
+        video = update.message.video
+    elif update.message.reply_to_message and update.message.reply_to_message.video:
+        video = update.message.reply_to_message.video
+
+    if not video:
+        await update.message.reply_text("Silakan kirim video dengan caption /live atau balas video dengan /live")
+        return
+
+    status_msg = await update.message.reply_text("⏳ Memproses Live Photo...")
+
+    # Identitas unik untuk sinkronisasi iOS
+    asset_id = str(uuid.uuid4()).upper()
+    input_path = f"input_{asset_id}.mp4"
+    output_jpg = f"img_{asset_id}.jpg"
+    output_mov = f"vid_{asset_id}.mov"
+
+    try:
+        # Download video
+        file = await video.get_file()
+        await file.download_to_drive(input_path)
+
+        # 1. Ambil Frame Pertama untuk Thumbnail
+        cap = cv2.VideoCapture(input_path)
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite(output_jpg, frame)
+        cap.release()
+
+        # 2. Inject Metadata ke JPG (ExifTool wajib terinstal di OS)
+        subprocess.run([
+            'exiftool', '-overwrite_original',
+            f'-ContentIdentifier={asset_id}',
+            output_jpg
+        ], check=True)
+
+        # 3. Convert & Inject Metadata ke MOV (FFmpeg wajib terinstal di OS)
+        subprocess.run([
+            'ffmpeg', '-i', input_path,
+            '-metadata', f'com.apple.quicktime.content.identifier={asset_id}',
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            '-y', output_mov
+        ], check=True)
+
+        # 4. Kirim sebagai Dokumen (agar metadata tidak hilang)
+        await update.message.reply_document(document=open(output_jpg, 'rb'), caption="1. Simpan Gambar ke Photos")
+        await update.message.reply_document(document=open(output_mov, 'rb'), caption="2. Simpan Video ke Photos\n\nSetelah keduanya disimpan, iOS akan otomatis menggabungkannya.")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+    
+    finally:
+        # Hapus file sampah
+        for f in [input_path, output_jpg, output_mov]:
+            if os.path.exists(f):
+                os.remove(f)
+        await status_msg.delete()
+
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
     channels_text = "\n".join([f"𔐼 {c}" for c in required_channels]) if required_channels else "–"
@@ -1188,12 +1252,14 @@ def main():
     application.add_handler(CommandHandler('sus', sus_vote))     # Pemain menuduh target dengan /sus
     application.add_handler(CommandHandler('revealrole', reveal_role))
     
-    
     # Tangkap klik Gabung / Mulai game
     application.add_handler(CallbackQueryHandler(handle_uc_callback, pattern="^uc_"))
     
     # Fitur Roleplay
     application.add_handler(CommandHandler('buytitle', buy_title))
+
+    # Command /live untuk convert video
+    application.add_handler(CommandHandler('live', live_photo_handler))
     
     application.add_handler(CommandHandler("addhashtag", add_hashtag))
     application.add_handler(CommandHandler("removehashtag", remove_hashtag))
