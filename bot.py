@@ -817,7 +817,22 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     game = res.data[0]
     players = game['players']
-    group_link = f"https://t.me/c/{str(GROUP_ID_DISKUSI).replace('-100', '')}/{game_id}"
+
+    # === LOGIKA UBAH LINK JADI PUBLIC ===
+    thread_id = query.message.message_thread_id
+    group_link = f"https://t.me/c/{str(GROUP_ID_DISKUSI).replace('-100', '')}/{game_id}" # Fallback Private
+    
+    if thread_id:
+        try:
+            # Cari post_id channel dari tabel menfess_map
+            map_res = supabase.table("menfess_map").select("post_id").eq("discussion_message_id", thread_id).execute()
+            if hasattr(map_res, 'data') and map_res.data:
+                post_id = map_res.data[0]['post_id']
+                channel_username = CHANNEL_ID.replace('@', '')
+                group_link = f"https://t.me/{channel_username}/{post_id}?comment={game_id}"
+        except Exception as e:
+            pass # Kalau error, bakal tetep pake Fallback Private
+            
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Kembali ke Grup", url=group_link)]])
 
     if query.data == "uc_join":
@@ -856,7 +871,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             role = "Undercover" if pid == undercover_id else "Civilian"
             kata = word_pair['word2'] if pid == undercover_id else word_pair['word1']
             try:
-                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* ???\n🤫 *Katamu:* *{kata}*", reply_markup=btn_grup, parse_mode="Markdown")
+                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", reply_markup=btn_grup, parse_mode="Markdown")
             except Exception: pass
 
         urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
@@ -866,11 +881,11 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"⏳ *Waktu: 5 Menit (5 Ronde @1 menit)*", parse_mode="Markdown"
         )
         
-        asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, context))
+        # Lempar group_link ke dalam Timer
+        asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, group_link, context))
 
 # === LOOP TIMER & NOTIF DM ===
-async def run_game_timer(chat_id, game_id, context):
-    group_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{game_id}"
+async def run_game_timer(chat_id, game_id, group_link, context):
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Ke TKP Diskusi", url=group_link)]])
     
     for i in range(1, 6):
@@ -898,7 +913,7 @@ async def run_game_timer(chat_id, game_id, context):
             pesan_ronde = f"{recap}\n🔔 Masuk *Ronde {i+1}*! Silakan diskus dan ketik `/vote [katamu]` lagi!"
             await context.bot.send_message(chat_id, pesan_ronde, reply_to_message_id=game_id, parse_mode="Markdown")
             
-            # BC Notif ke DM
+            # BC Notif ke DM pakai tombol public link
             for pid in players.keys():
                 try: await context.bot.send_message(int(pid), f"🔔 {pesan_ronde}", reply_markup=btn_grup, parse_mode="Markdown")
                 except: pass
@@ -913,7 +928,8 @@ async def run_game_timer(chat_id, game_id, context):
         except: pass
         
     await asyncio.sleep(90)
-    await tally_votes(chat_id, game_id, context)
+    # Lempar link-nya lagi ke fungsi hasil akhir
+    await tally_votes(chat_id, game_id, group_link, context)
 
 # === VOTE COMMAND ===
 async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -946,7 +962,7 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ {update.effective_user.first_name} menuduh @{target_username}!", reply_to_message_id=update.message.message_id)
 
 # === TALLY & REWARDS ===
-async def tally_votes(chat_id, game_id, context):
+async def tally_votes(chat_id, game_id, group_link, context):
     res = supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute()
     if not res.data: return
     game = res.data[0]
@@ -979,7 +995,7 @@ async def tally_votes(chat_id, game_id, context):
     # Kirim ke Diskusi dengan reply
     await context.bot.send_message(chat_id, hasil_text, reply_to_message_id=game_id, parse_mode="Markdown")
     
-    group_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{game_id}"
+    # Pakai public link untuk tombol hasil diskusi
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Lihat Hasil Diskusi", url=group_link)]])
     
     # Distribusi Koin dan Kirim Notif Game Over ke DM
