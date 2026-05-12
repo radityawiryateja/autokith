@@ -812,6 +812,7 @@ async def add_uc_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Gagal masuk database: {e}")
 
 # === LOBBY & CALLBACK GAME ===
+# === UPDATE LOBBY (Simpan Creator ID) ===
 async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID_DISKUSI:
         return await update.message.reply_text("🎮 Game ini hanya bisa dimainkan di dalam Grup Diskusi!")
@@ -831,27 +832,34 @@ async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
 
-    # Simpan di DB status Lobby
+    # Simpan creator_id secara eksplisit di DB
     players_data = {str(creator_id): {"name": creator_name, "username": creator_username}}
     try:
         supabase.table("uc_active_games").insert({
-            "game_id": msg.message_id, "chat_id": update.effective_chat.id, "status": "lobby",
-            "players": players_data, "undercover_id": 0, "civilian_word": "", "undercover_word": "", "votes": {}
+            "game_id": msg.message_id, 
+            "chat_id": update.effective_chat.id, 
+            "status": "lobby",
+            "creator_id": creator_id, # <--- SEKARANG DISIMPAN DI SINI
+            "players": players_data, 
+            "undercover_id": 0, 
+            "civilian_word": "", 
+            "undercover_word": "", 
+            "votes": {}
         }).execute()
     except Exception as e:
         logger.error(f"DB Error: {e}")
 
+# === UPDATE CALLBACK (Check Creator ID & Reply ke Diskusi) ===
 async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query.data.startswith("uc_"): return
     await query.answer()
 
-    user_id = str(update.effective_user.id)
+    user_id = update.effective_user.id
     user_name = update.effective_user.first_name
-    username = update.effective_user.username or user_id
+    username = update.effective_user.username or str(user_id)
     game_id = query.message.message_id
 
-    # Cek DB
     res = supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute()
     if not hasattr(res, 'data') or not res.data:
         return await query.edit_message_text("❌ Game ini sudah selesai atau dibatalkan.")
@@ -860,10 +868,15 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     players = game['players']
 
     if query.data == "uc_join":
-        if game['status'] != 'lobby': return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Game sudah dimulai!")
-        if user_id in players: return 
+        if game['status'] != 'lobby': 
+            return await context.bot.send_message(
+                chat_id=GROUP_ID_DISKUSI, 
+                text=f"⚠️ {user_name}, game sudah dimulai!",
+                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
+            )
+        if str(user_id) in players: return 
 
-        players[user_id] = {"name": user_name, "username": username}
+        players[str(user_id)] = {"name": user_name, "username": username}
         supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute()
         
         player_list = "\n".join([f"{i+1}. {p['name']} (@{p['username']})" for i, p in enumerate(players.values())])
@@ -871,14 +884,24 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👥 *Pemain Terdaftar:*\n{player_list}\n\n*(Minimal 3 pemain)*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif query.data == "uc_start":
-        # Ambil creator (pemain pertama yang join)
-        creator_id = list(players.keys())[0]
-        if user_id != creator_id: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Hanya Room Master yang bisa mulai!")
-        if len(players) < 3: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Minimal 3 orang!")
+        # Check creator pakai kolom creator_id yang baru
+        if user_id != game['creator_id']: 
+            return await context.bot.send_message(
+                chat_id=GROUP_ID_DISKUSI, 
+                text=f"⚠️ Hanya Room Master yang bisa memulai game ini!",
+                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
+            )
+            
+        if len(players) < 3: 
+            return await context.bot.send_message(
+                chat_id=GROUP_ID_DISKUSI, 
+                text="⚠️ Minimal butuh 3 orang untuk mulai!",
+                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
+            )
 
-        # Ambil Kata Random
+        # ... (Logika ambil kata tetap sama) ...
         words_res = supabase.table("uc_words").select("*").execute()
-        if not words_res.data: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="❌ Admin belum menambahkan kata. Hubungi Admin!")
+        if not words_res.data: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="❌ Kata di database kosong!")
         word_pair = random.choice(words_res.data)
         
         player_ids = list(players.keys())
@@ -890,13 +913,12 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "civilian_word": word_pair['word1'], "undercover_word": word_pair['word2']
         }).eq("game_id", game_id).execute()
 
-        # DM Pemain
         for pid in player_ids:
             role = "Undercover" if pid == undercover_id else "Civilian"
             kata = word_pair['word2'] if pid == undercover_id else word_pair['word1']
             try:
                 await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", parse_mode="Markdown")
-            except Exception: pass # Skip kalau ada yg block bot
+            except Exception: pass
 
         urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
         await query.edit_message_text(
@@ -904,19 +926,31 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"⏳ *Waktu: 5 Menit (5 Ronde @1 menit)*", parse_mode="Markdown"
         )
         
-        # Jalankan Timer di Background
-        asyncio.create_task(run_game_timer(update.effective_chat.id, game_id, context))
+        asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, context))
 
-# === LOOP TIMER & VOTING ===
+# === UPDATE TIMER (Tambah reply_to_message_id) ===
 async def run_game_timer(chat_id, game_id, context):
-    # 5 Ronde @1 Menit
     for i in range(1, 6):
         await asyncio.sleep(60)
-        if i < 5: await context.bot.send_message(chat_id, f"⏱️ *Ronde {i} selesai!* Masuk ronde {i+1}...", parse_mode="Markdown")
+        # Update status game dari DB untuk mastikan game belum dihapus/selesai
+        res = supabase.table("uc_active_games").select("status").eq("game_id", game_id).execute()
+        if not res.data: return # Game batal
+        
+        if i < 5: 
+            await context.bot.send_message(
+                chat_id, 
+                f"⏱️ *Ronde {i} selesai!* Masuk ronde {i+1}...", 
+                reply_to_message_id=game_id, # <--- BIAR TETEP DI DISKUSI
+                parse_mode="Markdown"
+            )
     
-    # Masuk Sesi Vote
     supabase.table("uc_active_games").update({"status": "voting"}).eq("game_id", game_id).execute()
-    await context.bot.send_message(chat_id, "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 90 Detik.\nKetik: `/sus @username [alasan]`", parse_mode="Markdown")
+    await context.bot.send_message(
+        chat_id, 
+        "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai (90 Detik).\nKetik: `/sus @username`", 
+        reply_to_message_id=game_id, # <--- BIAR TETEP DI DISKUSI
+        parse_mode="Markdown"
+    )
     
     await asyncio.sleep(90)
     await tally_votes(chat_id, game_id, context)
