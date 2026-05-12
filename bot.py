@@ -159,12 +159,11 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
 
         try:
-            # Gunakan set_chat_member_rights() untuk memberikan custom title tanpa promosi admin
-            # Membuat ChatMember object dengan custom_title yang diinginkan
-            await context.bot.set_chat_member_custom_title(
+            # Gunakan set_chat_member_tag() API Native Telegram terbaru
+            await context.bot.set_chat_member_tag(
                 chat_id=GROUP_ID_DISKUSI,
                 user_id=user_id,
-                custom_title=new_title
+                tag=new_title
             )
 
             await update.message.reply_text(
@@ -188,7 +187,7 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await update.message.reply_text(
-                    "❌ Gagal menerapkan title di grup. Pastikan bot memiliki akses untuk mengelola custom title. "
+                    "❌ Gagal menerapkan title di grup. Pastikan bot memiliki izin 'Manage Tags' (Kelola Peran Anggota).\n\n"
                     "Koin kamu telah dikembalikan (Refund)."
                 )
 
@@ -812,6 +811,7 @@ async def settings(update: Update, context: CallbackContext):
         f"🏷️ *Hashtags:*\n{hashtags_text}\n\n"
         f"💻 *Commands:*\n{commands_text}", parse_mode="Markdown"
     )
+
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Hanya admin yang bisa eksekusi command ini
     if update.effective_chat.id != ADMIN_GROUP_ID: 
