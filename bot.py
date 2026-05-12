@@ -7,7 +7,7 @@ import os
 import asyncio
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
 from supabase import create_client
 
 # Tarik data dari Environment Variables (Heroku)
@@ -159,26 +159,8 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
 
         try:
-            # Promote sebagai admin tanpa hak akses untuk trigger fitur title
-            await context.bot.promote_chat_member(
-                chat_id=GROUP_ID_DISKUSI,
-                user_id=user_id,
-                is_anonymous=False,
-                can_manage_chat=False,
-                can_delete_messages=False,
-                can_manage_video_chats=False,
-                can_restrict_members=False,
-                can_promote_members=False,
-                can_change_info=False,
-                can_invite_users=False,
-                can_post_messages=True,
-                can_edit_messages=False,
-                can_pin_messages=False,
-                can_post_stories=False,
-                can_edit_stories=False,
-                can_delete_stories=False
-            )
-            
+            # Gunakan set_chat_member_rights() untuk memberikan custom title tanpa promosi admin
+            # Membuat ChatMember object dengan custom_title yang diinginkan
             await context.bot.set_chat_administrator_custom_title(
                 chat_id=GROUP_ID_DISKUSI,
                 user_id=user_id,
@@ -197,7 +179,18 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Refund jika bot gagal ubah title
             supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
             logger.error(f"Gagal set title Telegram: {telegram_err}")
-            await update.message.reply_text("❌ Gagal menerapkan title di grup. Pastikan bot memiliki akses 'Atur Admin'. Koin kamu telah dikembalikan (Refund).")
+            
+            # Cek tipe error yang spesifik
+            if "User_Not_Participant" in str(telegram_err) or "user is not a member" in str(telegram_err):
+                await update.message.reply_text(
+                    "❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu!\n\n"
+                    "Koin kamu telah dikembalikan (Refund)."
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Gagal menerapkan title di grup. Pastikan bot memiliki akses untuk mengelola custom title. "
+                    "Koin kamu telah dikembalikan (Refund)."
+                )
 
     except Exception as db_err:
         logger.error(f"Error Database saat beli title: {db_err}")
@@ -524,7 +517,7 @@ async def handle_username(update: Update, context: CallbackContext):
         except Exception as e: logger.error(f"DB Error Auto: {e}")
 
         log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
-        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]))
+        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]), parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Error direct forward: {e}")
