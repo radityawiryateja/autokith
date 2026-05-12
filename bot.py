@@ -882,7 +882,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         cara_main = (
             "📜 *TATA CARA MAIN:*\n"
             "1. Cek kata rahasia kamu di DM bot. Jangan kasih tahu siapa pun.\n"
-            "2. Tiap ronde, ketik `/vote [deskripsi]` di grup sesuai giliran.\n"
+            "2. Tiap ronde, ketik `/vote [deskripsi]` disini.\n"
             "3. *Dilarang menyebut kata yang kamu pegang secara gamblang/langsung.*\n"
             "4. Sebutkan ciri-ciri, fungsi, suasana, rasa, bentuk, atau petunjuk halus dari kata itu.\n"
             "5. Setelah 5 ronde, vote siapa yang paling mencurigakan dengan `/sus @username`."
