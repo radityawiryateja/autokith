@@ -161,7 +161,7 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             # Gunakan set_chat_member_rights() untuk memberikan custom title tanpa promosi admin
             # Membuat ChatMember object dengan custom_title yang diinginkan
-            await context.bot.set_chat_administrator_custom_title(
+            await context.bot.set_chat_member_custom_title(
                 chat_id=GROUP_ID_DISKUSI,
                 user_id=user_id,
                 custom_title=new_title
