@@ -4,6 +4,7 @@ import logging
 import re
 import markdown
 import os
+import random
 import asyncio
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
@@ -794,6 +795,239 @@ async def delete_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(f"✅ `{command_name}` dihapus!", parse_mode='Markdown')
     except Exception: await update.message.reply_text("❌ Gagal.")
 
+# === FITUR TAMBAH KATA UNDERCOVER (ADMIN) ===
+async def add_uc_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
+    text = " ".join(context.args)
+    if "-" not in text:
+        return await update.message.reply_text("❌ Format salah! Gunakan: `/adducword Nasi Goreng - Mie Goreng`", parse_mode="Markdown")
+    
+    words = text.split("-")
+    w1, w2 = words[0].strip(), words[1].strip()
+    
+    try:
+        supabase.table("uc_words").insert({"word1": w1, "word2": w2}).execute()
+        await update.message.reply_text(f"✅ Berhasil menambahkan kata: *{w1}* vs *{w2}*", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gagal masuk database: {e}")
+
+# === LOBBY & CALLBACK GAME ===
+async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID_DISKUSI:
+        return await update.message.reply_text("🎮 Game ini hanya bisa dimainkan di dalam Grup Diskusi!")
+
+    creator_id = update.effective_user.id
+    creator_name = update.effective_user.first_name
+    creator_username = update.effective_user.username or str(creator_id)
+
+    keyboard = [
+        [InlineKeyboardButton("🎮 Gabung Game", callback_data="uc_join")],
+        [InlineKeyboardButton("▶️ Mulai Game", callback_data="uc_start")]
+    ]
+
+    msg = await update.message.reply_text(
+        f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👑 Room Master: {creator_name}\n\n"
+        f"👥 *Pemain Terdaftar:*\n1. {creator_name} (@{creator_username})\n\n*(Minimal 3 pemain)*",
+        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+    )
+
+    # Simpan di DB status Lobby
+    players_data = {str(creator_id): {"name": creator_name, "username": creator_username}}
+    try:
+        supabase.table("uc_active_games").insert({
+            "game_id": msg.message_id, "chat_id": update.effective_chat.id, "status": "lobby",
+            "players": players_data, "undercover_id": 0, "civilian_word": "", "undercover_word": "", "votes": {}
+        }).execute()
+    except Exception as e:
+        logger.error(f"DB Error: {e}")
+
+async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query.data.startswith("uc_"): return
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    user_name = update.effective_user.first_name
+    username = update.effective_user.username or user_id
+    game_id = query.message.message_id
+
+    # Cek DB
+    res = supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute()
+    if not hasattr(res, 'data') or not res.data:
+        return await query.edit_message_text("❌ Game ini sudah selesai atau dibatalkan.")
+    
+    game = res.data[0]
+    players = game['players']
+
+    if query.data == "uc_join":
+        if game['status'] != 'lobby': return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Game sudah dimulai!")
+        if user_id in players: return 
+
+        players[user_id] = {"name": user_name, "username": username}
+        supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute()
+        
+        player_list = "\n".join([f"{i+1}. {p['name']} (@{p['username']})" for i, p in enumerate(players.values())])
+        keyboard = [[InlineKeyboardButton("🎮 Gabung", callback_data="uc_join")], [InlineKeyboardButton("▶️ Mulai", callback_data="uc_start")]]
+        await query.edit_message_text(f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👥 *Pemain Terdaftar:*\n{player_list}\n\n*(Minimal 3 pemain)*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif query.data == "uc_start":
+        # Ambil creator (pemain pertama yang join)
+        creator_id = list(players.keys())[0]
+        if user_id != creator_id: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Hanya Room Master yang bisa mulai!")
+        if len(players) < 3: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Minimal 3 orang!")
+
+        # Ambil Kata Random
+        words_res = supabase.table("uc_words").select("*").execute()
+        if not words_res.data: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="❌ Admin belum menambahkan kata. Hubungi Admin!")
+        word_pair = random.choice(words_res.data)
+        
+        player_ids = list(players.keys())
+        random.shuffle(player_ids)
+        undercover_id = player_ids[0]
+        
+        supabase.table("uc_active_games").update({
+            "status": "playing", "undercover_id": int(undercover_id), 
+            "civilian_word": word_pair['word1'], "undercover_word": word_pair['word2']
+        }).eq("game_id", game_id).execute()
+
+        # DM Pemain
+        for pid in player_ids:
+            role = "Undercover" if pid == undercover_id else "Civilian"
+            kata = word_pair['word2'] if pid == undercover_id else word_pair['word1']
+            try:
+                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", parse_mode="Markdown")
+            except Exception: pass # Skip kalau ada yg block bot
+
+        urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
+        await query.edit_message_text(
+            f"🎯 *GAME DIMULAI!*\nCek DM untuk kata rahasia!\n\n🔄 *Urutan Deskripsi:*\n{urutan}\n\n"
+            f"⏳ *Waktu: 5 Menit (5 Ronde @1 menit)*", parse_mode="Markdown"
+        )
+        
+        # Jalankan Timer di Background
+        asyncio.create_task(run_game_timer(update.effective_chat.id, game_id, context))
+
+# === LOOP TIMER & VOTING ===
+async def run_game_timer(chat_id, game_id, context):
+    # 5 Ronde @1 Menit
+    for i in range(1, 6):
+        await asyncio.sleep(60)
+        if i < 5: await context.bot.send_message(chat_id, f"⏱️ *Ronde {i} selesai!* Masuk ronde {i+1}...", parse_mode="Markdown")
+    
+    # Masuk Sesi Vote
+    supabase.table("uc_active_games").update({"status": "voting"}).eq("game_id", game_id).execute()
+    await context.bot.send_message(chat_id, "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 90 Detik.\nKetik: `/sus @username [alasan]`", parse_mode="Markdown")
+    
+    await asyncio.sleep(90)
+    await tally_votes(chat_id, game_id, context)
+
+# === VOTE COMMAND ===
+async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID_DISKUSI: return
+    if not context.args: return await update.message.reply_text("Format: `/sus @username`", parse_mode="Markdown")
+    
+    voter_id = str(update.effective_user.id)
+    target_username = context.args[0].replace("@", "").lower()
+    
+    res = supabase.table("uc_active_games").select("*").eq("status", "voting").execute()
+    if not res.data: return await update.message.reply_text("❌ Tidak ada sesi voting yang aktif untukmu.")
+    
+    game = res.data[0]
+    players = game['players']
+    
+    if voter_id not in players: return await update.message.reply_text("❌ Kamu tidak bermain di game ini.")
+    
+    # Cari target user_id dari username
+    target_id = None
+    for pid, pdata in players.items():
+        if pdata['username'].lower() == target_username:
+            target_id = pid
+            break
+            
+    if not target_id: return await update.message.reply_text(f"❌ Pemain @{target_username} tidak ditemukan di game ini.")
+    
+    votes = game['votes']
+    votes[voter_id] = target_id
+    supabase.table("uc_active_games").update({"votes": votes}).eq("game_id", game['game_id']).execute()
+    
+    await update.message.reply_text(f"✅ {update.effective_user.first_name} menuduh @{target_username}!")
+
+# === TALLY & REWARDS ===
+async def tally_votes(chat_id, game_id, context):
+    res = supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute()
+    if not res.data: return
+    game = res.data[0]
+    if game['status'] != "voting": return
+    
+    votes = game['votes']
+    players = game['players']
+    under_id = str(game['undercover_id'])
+    
+    # Hitung suara
+    vote_counts = {}
+    for target in votes.values(): vote_counts[target] = vote_counts.get(target, 0) + 1
+    
+    # Cari yang paling banyak divote
+    if vote_counts:
+        suspect_id = max(vote_counts, key=vote_counts.get)
+        suspect_name = players[suspect_id]['name']
+    else:
+        suspect_id = None
+        suspect_name = "Tidak ada"
+
+    is_undercover_caught = (suspect_id == under_id)
+    undercover_name = players[under_id]['name']
+    
+    hasil_text = f"⚖️ *HASIL VOTING*\n\nTerbanyak divote: *{suspect_name}*\nIdentitas Undercover asli: *{undercover_name}*\n\n"
+    
+    if is_undercover_caught:
+        hasil_text += "🎉 *CIVILIAN MENANG!* Undercover berhasil ditangkap!\n\n💰 Hadiah:\n- Civilian: +200 Coins\n- Undercover: +100 Coins"
+    else:
+        hasil_text += "😈 *UNDERCOVER MENANG!* Kalian salah tangkap!\n\n💰 Hadiah:\n- Undercover: +200 Coins\n- Civilian: +100 Coins"
+        
+    await context.bot.send_message(chat_id, hasil_text, parse_mode="Markdown")
+    
+    # Distribusi Koin
+    for pid in players.keys():
+        if is_undercover_caught:
+            koin = 100 if pid == under_id else 200
+        else:
+            koin = 200 if pid == under_id else 100
+        await add_kith_coins(int(pid), koin)
+        
+    # Hapus DB
+    supabase.table("uc_active_games").delete().eq("game_id", game_id).execute()
+
+# === REVEAL ROLE (PREMIUM) ===
+async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    
+    res = supabase.table("uc_active_games").select("*").eq("status", "playing").execute()
+    if not res.data: return await update.message.reply_text("❌ Tidak ada game yang sedang berjalan.")
+    
+    # Pastikan user ada di game ini
+    game = next((g for g in res.data if user_id in g['players']), None)
+    if not game: return await update.message.reply_text("❌ Kamu tidak bermain di game aktif manapun.")
+    
+    # Cek & Potong Koin
+    koin_res = supabase.table("users").select("kith_coins").eq("user_id", int(user_id)).execute()
+    saldo = koin_res.data[0]['kith_coins'] if koin_res.data else 0
+    if saldo < 500: return await update.message.reply_text(f"❌ Koin tidak cukup. Butuh 500 Coins (Saldomu: {saldo}).")
+    
+    supabase.table("users").update({"kith_coins": saldo - 500}).eq("user_id", int(user_id)).execute()
+    
+    undercover_name = game['players'][str(game['undercover_id'])]['name']
+    civ_word = game['civilian_word']
+    und_word = game['undercover_word']
+    
+    await update.message.reply_text(
+        f"🔮 *REVEAL ROLE (Premium)* 🔮\n\n"
+        f"🤫 Undercover: *{undercover_name}*\n"
+        f"📝 Kata Civilian: *{civ_word}*\n"
+        f"📝 Kata Undercover: *{und_word}*\n\n"
+        f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
+    )
+
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
     channels_text = "\n".join([f"𔐼 {c}" for c in required_channels]) if required_channels else "–"
@@ -894,6 +1128,15 @@ def main():
     application.add_handler(CommandHandler('grupid', get_group_id))
     application.add_handler(CommandHandler('setrequired', set_required_channels))
     application.add_handler(CommandHandler('refreshcoin', refresh_coin))
+
+    # Fitur Game
+    application.add_handler(CommandHandler('adducword', add_uc_word))
+    application.add_handler(CommandHandler('undercover', start_undercover))
+    application.add_handler(CommandHandler('sus', sus_vote))
+    application.add_handler(CommandHandler('revealrole', reveal_role))
+    
+    # Tangkap klik Gabung / Mulai game
+    application.add_handler(CallbackQueryHandler(handle_uc_callback, pattern="^uc_"))
     
     # Fitur Roleplay
     application.add_handler(CommandHandler('buytitle', buy_title))
