@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 bot_active = True
 MENFESS_MODE = "auto" # Cache default
+TITLE_PRICE = 500 # Harga Custom Title
 
 WAITING_USERNAME = 1
 
@@ -42,7 +43,7 @@ CACHE_HASHTAGS = []
 required_channels = []
 CACHE_BANNED_USERS = []
 CACHE_COMSECT_OFF = set() 
-CACHE_BAD_WORDS = set() # CACHE LOKAL UNTUK BANNED WORDS
+CACHE_BAD_WORDS = set() 
 
 async def update_settings_cache():
     global MENFESS_MODE
@@ -116,6 +117,91 @@ async def check_subscription(user_id, context: CallbackContext):
             if member.status not in ['member', 'administrator', 'creator']: return False
         except Exception: return False
     return True
+
+# === HELPER: MANAJEMEN KOIN ===
+async def add_kith_coins(user_id: int, amount: int):
+    try:
+        response = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        current_balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+        new_balance = current_balance + amount
+        supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
+        return new_balance
+    except Exception as e:
+        logger.error(f"Gagal tambah koin untuk {user_id}: {e}")
+        return None
+
+# === FITUR BELI TITLE ===
+async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return await update.message.reply_text("🛒 Silakan gunakan command ini di chat pribadi (DM) dengan bot.")
+
+    user_id = update.effective_user.id
+    
+    if not context.args:
+        return await update.message.reply_text(
+            f"⚠️ Format salah!\nGunakan: `/buytitle <nama_title>`\nContoh: `/buytitle The Undercover Pro`\n\n*Harga: {TITLE_PRICE} Kith-Coins*", 
+            parse_mode="Markdown"
+        )
+    
+    new_title = " ".join(context.args)
+
+    if len(new_title) > 16:
+        return await update.message.reply_text("❌ Gagal! Nama title maksimal 16 karakter ya.")
+
+    try:
+        response = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        current_balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+
+        if current_balance < TITLE_PRICE:
+            return await update.message.reply_text(f"❌ Kith-Coins kamu tidak cukup.\nSaldo kamu: {current_balance} Coins\nHarga Title: {TITLE_PRICE} Coins")
+
+        new_balance = current_balance - TITLE_PRICE
+        supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
+
+        try:
+            # Promote sebagai admin tanpa hak akses untuk trigger fitur title
+            await context.bot.promote_chat_member(
+                chat_id=GROUP_ID_DISKUSI,
+                user_id=user_id,
+                is_anonymous=False,
+                can_manage_chat=False,
+                can_delete_messages=False,
+                can_manage_video_chats=False,
+                can_restrict_members=False,
+                can_promote_members=False,
+                can_change_info=False,
+                can_invite_users=False,
+                can_post_messages=True,
+                can_edit_messages=False,
+                can_pin_messages=False,
+                can_post_stories=False,
+                can_edit_stories=False,
+                can_delete_stories=False
+            )
+            
+            await context.bot.set_chat_administrator_custom_title(
+                chat_id=GROUP_ID_DISKUSI,
+                user_id=user_id,
+                custom_title=new_title
+            )
+
+            await update.message.reply_text(
+                f"✅ Transaksi Berhasil!\n\n"
+                f"🏷️ Title barumu: `{new_title}`\n"
+                f"🪙 Sisa saldo Kith-Coins: {new_balance}\n\n"
+                f"Silakan kirim pesan di grup diskusi untuk melihat title barumu!",
+                parse_mode="Markdown"
+            )
+
+        except Exception as telegram_err:
+            # Refund jika bot gagal ubah title
+            supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
+            logger.error(f"Gagal set title Telegram: {telegram_err}")
+            await update.message.reply_text("❌ Gagal menerapkan title di grup. Pastikan bot memiliki akses 'Atur Admin'. Koin kamu telah dikembalikan (Refund).")
+
+    except Exception as db_err:
+        logger.error(f"Error Database saat beli title: {db_err}")
+        await update.message.reply_text("❌ Terjadi kesalahan pada database. Silakan coba lagi nanti.")
 
 # === FITUR BANNED WORDS ===
 async def add_badwords(update: Update, context: CallbackContext):
@@ -249,6 +335,7 @@ async def set_required_channels(update: Update, context: CallbackContext):
 
 async def save_user(user_id, username):
     try:
+        # Update on_conflict supaya nggak override koin user pas update username
         supabase.table("users").upsert({"user_id": user_id, "username": username}, on_conflict=["user_id"]).execute()
     except Exception: pass
 
@@ -361,7 +448,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return WAITING_USERNAME
 
     else:
-        # Flow MANUAL REVIEW KE ADMIN GRUP (Persis kayak awal)
+        # Flow MANUAL REVIEW KE ADMIN GRUP
         try:
             fw_msg = await context.bot.copy_message(chat_id=ADMIN_GROUP_ID, from_chat_id=user_id, message_id=update.message.message_id)
 
@@ -388,7 +475,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Gagal mengirim menfess ke admin review.")
             
         return ConversationHandler.END
-
 
 async def handle_username(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -423,8 +509,12 @@ async def handle_username(update: Update, context: CallbackContext):
 
         CACHE_COMSECT_OFF.add(message_sent.message_id)
 
+        # Tambahkan Koin (Teks di Auto Mode = 50)
+        new_balance = await add_kith_coins(user_id, 50)
+
+        coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
         keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
-        await update.message.reply_text("Pesan kamu telah dikirim ke channel! 🪶", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         
         try:
             supabase.table("menfess_map").insert({
@@ -467,6 +557,9 @@ async def handle_callback_review(update: Update, context: CallbackContext):
             try:
                 original_msg = query.message.reply_to_message
 
+                # Tentukan jumlah koin berdasarkan ada tidaknya media
+                earned_coins = 100 if (original_msg.photo or original_msg.video or original_msg.document or original_msg.animation) else 50
+
                 if original_msg and original_msg.text:
                     sent_msg = await context.bot.send_message(
                         chat_id=CHANNEL_ID,
@@ -488,6 +581,9 @@ async def handle_callback_review(update: Update, context: CallbackContext):
                 log_msg = f"📌 Log Menfess (Manual Approved):\n🆔 Pengirim ID: `{user_id}`\n⚙️ Comsect: {'ON' if comsect_on else 'OFF'}"
                 await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, parse_mode="Markdown")
 
+                # Update saldo Kith-Coins
+                new_balance = await add_kith_coins(user_id, earned_coins)
+
                 # Simpan data asli ke DB
                 try:
                     supabase.table("menfess_map").insert({
@@ -498,8 +594,14 @@ async def handle_callback_review(update: Update, context: CallbackContext):
 
                 await query.edit_message_text(f"{query.message.text}\n\n✅ *STATUS: {status_text}*", parse_mode="Markdown")
 
+                coin_msg = f"\n💰 *+{earned_coins} Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
                 keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{sent_msg.message_id}")]]
-                await context.bot.send_message(chat_id=user_id, text=f"✅ Yay! Menfess kamu telah disetujui admin! ({status_text})", reply_markup=InlineKeyboardMarkup(keyboard))
+                await context.bot.send_message(
+                    chat_id=user_id, 
+                    text=f"✅ Yay! Menfess kamu telah disetujui admin! ({status_text}){coin_msg}", 
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
+                )
             except Exception as e:
                 logger.error(f"Gagal publish manual menfess: {e}")
                 await query.edit_message_text(f"{query.message.text}\n\n❌ *GAGAL DIPUBLISH:* Pesan asli mungkin dihapus.", parse_mode="Markdown")
@@ -514,7 +616,6 @@ async def handle_callback_review(update: Update, context: CallbackContext):
             await context.bot.send_message(chat_id=user_id, text=warning_text, parse_mode="Markdown")
 
 async def handle_admin_reply(update: Update, context: CallbackContext):
-    # Cek apakah ini di ADMIN GRUP atau LOG GRUP
     if update.effective_chat.id not in [ADMIN_GROUP_ID, LOG_GROUP_ID] or not update.message.reply_to_message: return
 
     match = re.search(r"ID(?:\s*Pengguna)?:?\s*[`]*(\d+)", update.message.reply_to_message.text or update.message.reply_to_message.caption or "")
@@ -543,12 +644,9 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
         except: pass
     except Exception: await update.message.reply_text("❌ Gagal mengirim balasan.")
 
-# === FUNGSI TAMBAHAN UNTUK FIX ERROR NameError ===
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Pass karena post channel sudah dihandle melalui logic flow atau handle_discussion 
     pass
 
-# === HANDLE GRUP DISKUSI ===
 async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
@@ -556,7 +654,6 @@ async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.is_automatic_forward and msg.forward_origin and msg.forward_origin.type == "channel":
         post_id = msg.forward_origin.message_id
 
-        # CEK VIA MEMORI LOKAL INSTAN SAJA (TANPA DATABASE)
         if post_id in CACHE_COMSECT_OFF:
             try:
                 await msg.delete()
@@ -565,7 +662,6 @@ async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Gagal hapus comsect via cache: {e}")
 
-        # Jika tidak ada di cache (Comsect ON), simpan ID diskusi ke DB
         origin_chat = msg.forward_origin.chat
         if origin_chat.username and ("@" + origin_chat.username.lower() == CHANNEL_ID.lower()):
             try:
@@ -573,7 +669,6 @@ async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception: pass
         return
 
-    # Notifikasi Balasan Anonim
     if msg.reply_to_message:
         try:
             replied_msg_id = msg.reply_to_message.message_id
@@ -623,7 +718,21 @@ async def get_all_user_ids():
 
 async def menu(update: Update, context: CallbackContext):
     if update.effective_chat.type != "private": return
-    menu_text = "𔐼 *Kitheons:* [@kitheons](https://t.me/kitheons)\n𔐼 *Ch Arsip:* [@kithives](https://t.me/kithives)\n\n"
+    
+    # Ambil balance user
+    user_id = update.effective_user.id
+    try:
+        response = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+    except:
+        balance = 0
+
+    menu_text = (
+        "𔐼 *Kitheons:* [@kitheons](https://t.me/kitheons)\n"
+        "𔐼 *Ch Arsip:* [@kithives](https://t.me/kithives)\n\n"
+        f"🪙 *Kith-Coins Kamu:* {balance}\n\n"
+        "Gunakan `/buytitle <nama>` untuk beli Custom Title seharga 500 Koin!"
+    )
     await update.message.reply_text(menu_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 Info Kitheons", url="https://t.me/kithives")]]))
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,6 +819,72 @@ async def settings(update: Update, context: CallbackContext):
         f"🏷️ *Hashtags:*\n{hashtags_text}\n\n"
         f"💻 *Commands:*\n{commands_text}", parse_mode="Markdown"
     )
+async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Hanya admin yang bisa eksekusi command ini
+    if update.effective_chat.id != ADMIN_GROUP_ID: 
+        return
+    
+    await update.message.reply_text("⏳ Memulai kalkulasi Kith-Coins retroaktif... Mohon tunggu, proses ini butuh waktu.")
+    
+    try:
+        # Ambil semua data histori dari menfess_map
+        response = supabase.table("menfess_map").select("sender_user_id").execute()
+        
+        if not hasattr(response, 'data') or not response.data:
+            return await update.message.reply_text("❌ Data menfess map masih kosong.")
+            
+        # Hitung frekuensi menfess per user_id pakai dictionary
+        user_counts = {}
+        for row in response.data:
+            uid = row.get("sender_user_id")
+            if uid:
+                user_counts[uid] = user_counts.get(uid, 0) + 1
+                
+        berhasil, gagal = 0, 0
+        
+        for uid, count in user_counts.items():
+            reward_coins = count * 50 # Pukul rata 50 koin per menfess lama
+            
+            try:
+                # Ambil saldo eksisting di tabel users
+                user_res = supabase.table("users").select("kith_coins").eq("user_id", uid).execute()
+                current_coins = user_res.data[0].get("kith_coins") if hasattr(user_res, 'data') and user_res.data and user_res.data[0].get("kith_coins") is not None else 0
+                
+                # Update saldo gabungan
+                new_balance = current_coins + reward_coins
+                
+                # Gunakan update biasa, atau upsert jika usernya berpotensi terhapus dari tabel users
+                supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", uid).execute()
+                
+                # Format notifikasi ke user
+                notif_text = (
+                    f"🎉 *Kejutan Kith-Coins Retroaktif!*\n\n"
+                    f"Terima kasih atas loyalitas kamu! Karena kamu sudah pernah mengirim *{count} menfess* di Kitheons sebelumnya, "
+                    f"kamu berhak mendapatkan kompensasi sebesar *{reward_coins} Kith-Coins*!\n\n"
+                    f"🪙 Saldo Koin kamu sekarang: *{new_balance}*\n\n"
+                    f"Koin ini bisa kamu tukarkan ke berbagai fitur mendatang seperti *Custom Title Loyalty* dan lain-lain. Pantengin terus update dari admin ya!"
+                )
+                
+                # Broadcast pesannya
+                await context.bot.send_message(chat_id=uid, text=notif_text, parse_mode="Markdown")
+                berhasil += 1
+                
+            except Exception as e:
+                logger.error(f"Gagal refresh coin untuk user {uid}: {e}")
+                gagal += 1
+                
+            # Wajib dikasih delay biar nggak kena limit 30 pesan/detik dari Telegram
+            await asyncio.sleep(0.1) 
+            
+        await update.message.reply_text(
+            f"✅ *Refresh Coin Selesai!*\n\n"
+            f"👤 User berhasil diproses: {berhasil}\n"
+            f"❌ Gagal kirim: {gagal}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error refresh coin: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat memproses data database.")
 
 def main():
     application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
@@ -725,6 +900,10 @@ def main():
     application.add_handler(CommandHandler('close', close_bot))
     application.add_handler(CommandHandler('grupid', get_group_id))
     application.add_handler(CommandHandler('setrequired', set_required_channels))
+    application.add_handler(CommandHandler('refreshcoin', refresh_coin))
+    
+    # Fitur Roleplay
+    application.add_handler(CommandHandler('buytitle', buy_title))
     
     application.add_handler(CommandHandler("addhashtag", add_hashtag))
     application.add_handler(CommandHandler("removehashtag", remove_hashtag))
