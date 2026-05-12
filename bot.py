@@ -131,6 +131,43 @@ async def add_kith_coins(user_id: int, amount: int):
         logger.error(f"Gagal tambah koin untuk {user_id}: {e}")
         return None
 
+# === FITUR PROFIL & LEADERBOARD ===
+async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name
+    
+    try:
+        res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        coins = res.data[0].get("kith_coins") if res.data else 0
+        
+        text = (
+            f"👤 *PROFIL KAMU*\n\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"🏷️ Username: @{username}\n"
+            f"🪙 Kith-Coins: *{coins}*\n"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text("❌ Gagal mengambil data profil.")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Ambil Top 10 Player dengan koin terbanyak
+        res = supabase.table("users").select("username, kith_coins").order("kith_coins", desc=True).limit(10).execute()
+        if not res.data:
+            return await update.message.reply_text("Belum ada data pemain.")
+        
+        text = "🏆 *LEADERBOARD KITH-COINS* 🏆\n\n"
+        for i, row in enumerate(res.data):
+            username = row.get("username") or "Anonim"
+            coins = row.get("kith_coins", 0)
+            text += f"{i+1}. @{username} - *{coins}* Coins\n"
+        
+        text += "\nTerus aktif dan kumpulkan koin sebanyak-banyaknya!"
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text("❌ Gagal mengambil data leaderboard.")
+
 # === FITUR BELI TITLE ===
 async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
@@ -160,7 +197,6 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
 
         try:
-            # Gunakan set_chat_member_tag() API Native Telegram terbaru
             await context.bot.set_chat_member_tag(
                 chat_id=GROUP_ID_DISKUSI,
                 user_id=user_id,
@@ -176,21 +212,13 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         except Exception as telegram_err:
-            # Refund jika bot gagal ubah title
             supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
             logger.error(f"Gagal set title Telegram: {telegram_err}")
             
-            # Cek tipe error yang spesifik
             if "User_Not_Participant" in str(telegram_err) or "user is not a member" in str(telegram_err):
-                await update.message.reply_text(
-                    "❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu!\n\n"
-                    "Koin kamu telah dikembalikan (Refund)."
-                )
+                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu!\n\nKoin kamu telah dikembalikan (Refund).")
             else:
-                await update.message.reply_text(
-                    "❌ Gagal menerapkan title di grup. Pastikan bot memiliki izin 'Manage Tags' (Kelola Peran Anggota).\n\n"
-                    "Koin kamu telah dikembalikan (Refund)."
-                )
+                await update.message.reply_text("❌ Gagal menerapkan title di grup. Pastikan bot memiliki izin 'Manage Tags' (Kelola Peran Anggota).\n\nKoin kamu telah dikembalikan (Refund).")
 
     except Exception as db_err:
         logger.error(f"Error Database saat beli title: {db_err}")
@@ -328,7 +356,6 @@ async def set_required_channels(update: Update, context: CallbackContext):
 
 async def save_user(user_id, username):
     try:
-        # Update on_conflict supaya nggak override koin user pas update username
         supabase.table("users").upsert({"user_id": user_id, "username": username}, on_conflict=["user_id"]).execute()
     except Exception: pass
 
@@ -353,7 +380,7 @@ async def start(update: Update, context: CallbackContext):
         keyboard = [[InlineKeyboardButton("Join Channels", url=f"https://t.me/{c[1:]}")] for c in required_channels]
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
-# === ALUR MENFESS (CONVERSATION HANDLER) ===
+# === ALUR MENFESS ===
 async def handle_pesan(update: Update, context: CallbackContext):
     global bot_active, MENFESS_MODE
     if update.effective_chat.type != "private": return ConversationHandler.END
@@ -366,12 +393,10 @@ async def handle_pesan(update: Update, context: CallbackContext):
     first_name = update.effective_user.first_name
     display_name = f"@{username}" if username else first_name
 
-    # Cek Blokir
     if user_id in CACHE_BANNED_USERS:
         await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
         return ConversationHandler.END
 
-    # === BALASAN ANONIM VIA TEKS TERSEMBUNYI ===
     if update.message.reply_to_message:
         replied_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
         match = re.search(r"#ID:(\d+)", replied_text)
@@ -379,16 +404,9 @@ async def handle_pesan(update: Update, context: CallbackContext):
             try:
                 comment_msg_id = int(match.group(1))
                 if update.message.text:
-                    await context.bot.send_message(
-                        chat_id=GROUP_ID_DISKUSI, text=f"🗣️ *Balasan Sender:*\n\n{update.message.text}",
-                        reply_to_message_id=comment_msg_id, parse_mode="Markdown"
-                    )
+                    await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text=f"🗣️ *Balasan Sender:*\n\n{update.message.text}", reply_to_message_id=comment_msg_id, parse_mode="Markdown")
                 else:
-                    await context.bot.copy_message(
-                        chat_id=GROUP_ID_DISKUSI, from_chat_id=user_id, message_id=update.message.message_id,
-                        reply_to_message_id=comment_msg_id, caption=f"🗣️ *Balasan Sender:*\n\n{update.message.caption or ''}",
-                        parse_mode="Markdown"
-                    )
+                    await context.bot.copy_message(chat_id=GROUP_ID_DISKUSI, from_chat_id=user_id, message_id=update.message.message_id, reply_to_message_id=comment_msg_id, caption=f"🗣️ *Balasan Sender:*\n\n{update.message.caption or ''}", parse_mode="Markdown")
                 await update.message.reply_text("✅ Balasan anonim berhasil dikirim ke pengomentar!")
             except Exception as e:
                 logger.error(f"Gagal memproses balasan anonim: {e}")
@@ -403,27 +421,20 @@ async def handle_pesan(update: Update, context: CallbackContext):
     pesan_teks = update.message.text or update.message.caption or ""
     pesan_teks_lower = pesan_teks.lower()
 
-    # VALIDASI BANNED WORDS (Berlaku buat semua mode)
     for bw in CACHE_BAD_WORDS:
         if re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower):
             await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
             return ConversationHandler.END
 
-    # LOGIKA PENGIRIMAN MENFESS
     if MENFESS_MODE == "auto":
-        # Sesi auto: HANYA TEKS, NO MEDIA
         if not update.message.text:
             await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
             return ConversationHandler.END
 
         if len(update.message.text) > 70:
-            await update.message.reply_text(
-                f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. "
-                f"(Pesanmu saat ini: {len(update.message.text)} karakter)."
-            )
+            await update.message.reply_text(f"❌ Menfess terlalu panjang! Maksimal 70 karakter ya. (Pesanmu saat ini: {len(update.message.text)} karakter).")
             return ConversationHandler.END
 
-        # VALIDASI ANTI MENTION
         ada_mention = False
         if update.message.entities:
             for ent in update.message.entities:
@@ -433,7 +444,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
             return ConversationHandler.END
 
-        # Simpan state ke context untuk input username berikutnya
         context.user_data['teks_menfess'] = update.message.text
         context.user_data['entities'] = update.message.entities or []
 
@@ -441,26 +451,16 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return WAITING_USERNAME
 
     else:
-        # Flow MANUAL REVIEW KE ADMIN GRUP
         try:
             fw_msg = await context.bot.copy_message(chat_id=ADMIN_GROUP_ID, from_chat_id=user_id, message_id=update.message.message_id)
 
             keyboard = [
-                [
-                    InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{update.message.message_id}"),
-                    InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{update.message.message_id}")
-                ],
+                [InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{update.message.message_id}"), InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{update.message.message_id}")],
                 [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{update.message.message_id}")]
             ]
 
             review_text = f"🚨 *REVIEW MENFESS*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`"
-            await context.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=review_text,
-                reply_to_message_id=fw_msg.message_id,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
+            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=review_text, reply_to_message_id=fw_msg.message_id, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
             await update.message.reply_text("⏳ Menfess kamu sedang masuk ke antrean admin untuk direview. Mohon tunggu ya!")
         except Exception as e:
@@ -477,32 +477,15 @@ async def handle_username(update: Update, context: CallbackContext):
     teks_asli = context.user_data.get('teks_menfess', "")
     original_entities = context.user_data.get('entities', [])
 
-    # Tambah zero-width space
     final_text = teks_asli + "\u200B"
-    
-    # Kalkulasi offset Telegram
     offset = len(teks_asli.encode('utf-16-le')) // 2
     
-    invisible_link = MessageEntity(
-        type=MessageEntity.TEXT_LINK, 
-        offset=offset, 
-        length=1, 
-        url=f"https://t.me/{target_username}"
-    )
-    
+    invisible_link = MessageEntity(type=MessageEntity.TEXT_LINK, offset=offset, length=1, url=f"https://t.me/{target_username}")
     final_entities = original_entities + [invisible_link]
 
     try:
-        message_sent = await context.bot.send_message(
-            chat_id=CHANNEL_ID, 
-            text=final_text,
-            entities=final_entities,
-            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
-        )
-
+        message_sent = await context.bot.send_message(chat_id=CHANNEL_ID, text=final_text, entities=final_entities, link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True))
         CACHE_COMSECT_OFF.add(message_sent.message_id)
-
-        # Tambahkan Koin (Teks di Auto Mode = 50)
         new_balance = await add_kith_coins(user_id, 50)
 
         coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
@@ -510,10 +493,7 @@ async def handle_username(update: Update, context: CallbackContext):
         await update.message.reply_text(f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         
         try:
-            supabase.table("menfess_map").insert({
-                "post_id": message_sent.message_id, 
-                "sender_user_id": user_id
-            }).execute()
+            supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id}).execute()
         except Exception as e: logger.error(f"DB Error Auto: {e}")
 
         log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
@@ -531,7 +511,6 @@ async def cancel_menfess(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Pengiriman menfess dibatalkan.")
     return ConversationHandler.END
 
-# === HANDLER TOMBOL REVIEW (SETUJU/TOLAK) ===
 async def handle_callback_review(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
@@ -543,69 +522,42 @@ async def handle_callback_review(update: Update, context: CallbackContext):
         user_id = int(parts[2])
         msg_id = int(parts[3])
 
-        if action in ["A_ON", "A_OFF"]:  # Approve
+        if action in ["A_ON", "A_OFF"]:
             comsect_on = True if action == "A_ON" else False
             status_text = "DISETUJUI & COMSECT ON" if comsect_on else "DISETUJUI & COMSECT OFF"
 
             try:
                 original_msg = query.message.reply_to_message
-
-                # Tentukan jumlah koin berdasarkan ada tidaknya media
                 earned_coins = 100 if (original_msg.photo or original_msg.video or original_msg.document or original_msg.animation) else 50
 
                 if original_msg and original_msg.text:
-                    sent_msg = await context.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=original_msg.text,
-                        entities=original_msg.entities,
-                        link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
-                    )
+                    sent_msg = await context.bot.send_message(chat_id=CHANNEL_ID, text=original_msg.text, entities=original_msg.entities, link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True))
                 else:
-                    sent_msg = await context.bot.copy_message(
-                        chat_id=CHANNEL_ID,
-                        from_chat_id=ADMIN_GROUP_ID,
-                        message_id=original_msg.message_id
-                    )
+                    sent_msg = await context.bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=ADMIN_GROUP_ID, message_id=original_msg.message_id)
 
-                # SIMPAN KE CACHE JIKA COMSECT OFF
-                if not comsect_on:
-                    CACHE_COMSECT_OFF.add(sent_msg.message_id)
+                if not comsect_on: CACHE_COMSECT_OFF.add(sent_msg.message_id)
 
                 log_msg = f"📌 Log Menfess (Manual Approved):\n🆔 Pengirim ID: `{user_id}`\n⚙️ Comsect: {'ON' if comsect_on else 'OFF'}"
                 await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, parse_mode="Markdown")
 
-                # Update saldo Kith-Coins
                 new_balance = await add_kith_coins(user_id, earned_coins)
 
-                # Simpan data asli ke DB
                 try:
-                    supabase.table("menfess_map").insert({
-                        "post_id": sent_msg.message_id, 
-                        "sender_user_id": user_id
-                    }).execute()
+                    supabase.table("menfess_map").insert({"post_id": sent_msg.message_id, "sender_user_id": user_id}).execute()
                 except Exception as e: logger.error(f"DB Error Map: {e}")
 
                 await query.edit_message_text(f"{query.message.text}\n\n✅ *STATUS: {status_text}*", parse_mode="Markdown")
 
                 coin_msg = f"\n💰 *+{earned_coins} Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
                 keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{sent_msg.message_id}")]]
-                await context.bot.send_message(
-                    chat_id=user_id, 
-                    text=f"✅ Yay! Menfess kamu telah disetujui admin! ({status_text}){coin_msg}", 
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="Markdown"
-                )
+                await context.bot.send_message(chat_id=user_id, text=f"✅ Yay! Menfess kamu telah disetujui admin! ({status_text}){coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Gagal publish manual menfess: {e}")
                 await query.edit_message_text(f"{query.message.text}\n\n❌ *GAGAL DIPUBLISH:* Pesan asli mungkin dihapus.", parse_mode="Markdown")
 
-        elif action == "R":  # Reject
+        elif action == "R":
             await query.edit_message_text(f"{query.message.text}\n\n❌ *STATUS: DITOLAK*", parse_mode="Markdown")
-            warning_text = (
-                "⚠️ *Menfess Ditolak*\n\n"
-                "Maaf, menfess kamu ditolak oleh admin karena belum sesuai dengan rules base. "
-                "Silakan perbaiki format/isi menfess kamu dan kirim ulang ya!"
-            )
+            warning_text = "⚠️ *Menfess Ditolak*\n\nMaaf, menfess kamu ditolak oleh admin karena belum sesuai dengan rules base. Silakan perbaiki format/isi menfess kamu dan kirim ulang ya!"
             await context.bot.send_message(chat_id=user_id, text=warning_text, parse_mode="Markdown")
 
 async def handle_admin_reply(update: Update, context: CallbackContext):
@@ -679,12 +631,7 @@ async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"`#ID:{msg.message_id}`"
                 )
 
-                await context.bot.send_message(
-                    chat_id=sender_user_id,
-                    text=notif_text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 Lihat Balasan", url=link)]]),
-                    parse_mode="Markdown"
-                )
+                await context.bot.send_message(chat_id=sender_user_id, text=notif_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 Lihat Balasan", url=link)]]), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"❌ Gagal proses balasan diskusi: {e}")
 
@@ -711,8 +658,6 @@ async def get_all_user_ids():
 
 async def menu(update: Update, context: CallbackContext):
     if update.effective_chat.type != "private": return
-    
-    # Ambil balance user
     user_id = update.effective_user.id
     try:
         response = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
@@ -729,36 +674,20 @@ async def menu(update: Update, context: CallbackContext):
     await update.message.reply_text(menu_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 Info Kitheons", url="https://t.me/kithives")]]))
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
-        return await update.message.reply_text("Format: /broadcastfw <link>")
-
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcastfw <link>")
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
-
-    if not match:
-        return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya t.me/username_channel/angka")
-
+    if not match: return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya t.me/username_channel/angka")
     channel_username, message_id = match.groups()
-
-    if channel_username == "c":
-        return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
-
+    if channel_username == "c": return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
     user_list = await get_all_user_ids()
     sc, fc = 0, 0
-
     for user_id in user_list:
         try:
-            await context.bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=f"@{channel_username}",
-                message_id=int(message_id)
-            )
+            await context.bot.forward_message(chat_id=user_id, from_chat_id=f"@{channel_username}", message_id=int(message_id))
             sc += 1
-        except Exception as e:
-            fc += 1
-
+        except Exception as e: fc += 1
         await asyncio.sleep(0.05)
-
     await update.message.reply_text(f"✅ Selesai! Berhasil: {sc}, Gagal: {fc}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -799,57 +728,61 @@ async def delete_command(update: Update, context: CallbackContext) -> None:
 async def add_uc_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
     text = " ".join(context.args)
-    if "-" not in text:
-        return await update.message.reply_text("❌ Format salah! Gunakan: `/adducword Nasi Goreng - Mie Goreng`", parse_mode="Markdown")
-    
+    if "-" not in text: return await update.message.reply_text("❌ Format salah! Gunakan: `/adducword Nasi Goreng - Mie Goreng`", parse_mode="Markdown")
     words = text.split("-")
     w1, w2 = words[0].strip(), words[1].strip()
-    
     try:
         supabase.table("uc_words").insert({"word1": w1, "word2": w2}).execute()
         await update.message.reply_text(f"✅ Berhasil menambahkan kata: *{w1}* vs *{w2}*", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Gagal masuk database: {e}")
+    except Exception as e: await update.message.reply_text(f"❌ Gagal masuk database: {e}")
+
+# === INPUT KATA PEMAIN (COMMAND /vote) ===
+async def submit_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID_DISKUSI: return
+    if not context.args: 
+        return await update.message.reply_text("Format salah! Ketik: `/vote [kata/kalimat deskripsi]`", parse_mode="Markdown")
+    
+    user_id = str(update.effective_user.id)
+    desc_word = " ".join(context.args)
+    
+    res = supabase.table("uc_active_games").select("*").eq("status", "playing").execute()
+    if not res.data: return
+    
+    game = next((g for g in res.data if user_id in g['players']), None)
+    if not game: return
+    
+    players = game['players']
+    
+    # Menyimpan kata yang disubmit ke JSON players
+    players[user_id]['current_word'] = desc_word
+    supabase.table("uc_active_games").update({"players": players}).eq("game_id", game['game_id']).execute()
+    
+    await update.message.reply_text(f"✅ Deskripsi diterima dari {update.effective_user.first_name}!", reply_to_message_id=update.message.message_id)
 
 # === LOBBY & CALLBACK GAME ===
-# === UPDATE LOBBY (Simpan Creator ID) ===
 async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ID_DISKUSI:
-        return await update.message.reply_text("🎮 Game ini hanya bisa dimainkan di dalam Grup Diskusi!")
+    if update.effective_chat.id != GROUP_ID_DISKUSI: return await update.message.reply_text("🎮 Game ini hanya bisa dimainkan di dalam Grup Diskusi!")
 
     creator_id = update.effective_user.id
     creator_name = update.effective_user.first_name
     creator_username = update.effective_user.username or str(creator_id)
 
-    keyboard = [
-        [InlineKeyboardButton("🎮 Gabung Game", callback_data="uc_join")],
-        [InlineKeyboardButton("▶️ Mulai Game", callback_data="uc_start")]
-    ]
-
+    keyboard = [[InlineKeyboardButton("🎮 Gabung Game", callback_data="uc_join")], [InlineKeyboardButton("▶️ Mulai Game", callback_data="uc_start")]]
     msg = await update.message.reply_text(
-        f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👑 Room Master: {creator_name}\n\n"
-        f"👥 *Pemain Terdaftar:*\n1. {creator_name} (@{creator_username})\n\n*(Minimal 3 pemain)*",
+        f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👑 Room Master: {creator_name}\n\n👥 *Pemain Terdaftar:*\n1. {creator_name} (@{creator_username})\n\n*(Minimal 3 pemain)*",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
 
-    # Simpan creator_id secara eksplisit di DB
-    players_data = {str(creator_id): {"name": creator_name, "username": creator_username}}
+    # Tambahkan field 'current_word' kosong agar siap diisi pemain
+    players_data = {str(creator_id): {"name": creator_name, "username": creator_username, "current_word": ""}}
     try:
         supabase.table("uc_active_games").insert({
-            "game_id": msg.message_id, 
-            "chat_id": update.effective_chat.id, 
-            "status": "lobby",
-            "creator_id": creator_id, # <--- SEKARANG DISIMPAN DI SINI
-            "players": players_data, 
-            "undercover_id": 0, 
-            "civilian_word": "", 
-            "undercover_word": "", 
-            "votes": {}
+            "game_id": msg.message_id, "chat_id": update.effective_chat.id, "status": "lobby",
+            "creator_id": creator_id, "players": players_data, "undercover_id": 0, 
+            "civilian_word": "", "undercover_word": "", "votes": {}
         }).execute()
-    except Exception as e:
-        logger.error(f"DB Error: {e}")
+    except Exception as e: logger.error(f"DB Error: {e}")
 
-# === UPDATE CALLBACK (Check Creator ID & Reply ke Diskusi) ===
 async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query.data.startswith("uc_"): return
@@ -861,22 +794,19 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     game_id = query.message.message_id
 
     res = supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute()
-    if not hasattr(res, 'data') or not res.data:
-        return await query.edit_message_text("❌ Game ini sudah selesai atau dibatalkan.")
+    if not hasattr(res, 'data') or not res.data: return await query.edit_message_text("❌ Game ini sudah selesai atau dibatalkan.")
     
     game = res.data[0]
     players = game['players']
+    group_link = f"https://t.me/c/{str(GROUP_ID_DISKUSI).replace('-100', '')}/{game_id}"
+    btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Kembali ke Grup", url=group_link)]])
 
     if query.data == "uc_join":
         if game['status'] != 'lobby': 
-            return await context.bot.send_message(
-                chat_id=GROUP_ID_DISKUSI, 
-                text=f"⚠️ {user_name}, game sudah dimulai!",
-                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
-            )
+            return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text=f"⚠️ {user_name}, game sudah dimulai!", reply_to_message_id=game_id)
         if str(user_id) in players: return 
 
-        players[str(user_id)] = {"name": user_name, "username": username}
+        players[str(user_id)] = {"name": user_name, "username": username, "current_word": ""}
         supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute()
         
         player_list = "\n".join([f"{i+1}. {p['name']} (@{p['username']})" for i, p in enumerate(players.values())])
@@ -884,22 +814,12 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👥 *Pemain Terdaftar:*\n{player_list}\n\n*(Minimal 3 pemain)*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif query.data == "uc_start":
-        # Check creator pakai kolom creator_id yang baru
         if user_id != game['creator_id']: 
-            return await context.bot.send_message(
-                chat_id=GROUP_ID_DISKUSI, 
-                text=f"⚠️ Hanya Room Master yang bisa memulai game ini!",
-                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
-            )
+            return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text=f"⚠️ Hanya Room Master yang bisa memulai game ini!", reply_to_message_id=game_id)
             
         if len(players) < 3: 
-            return await context.bot.send_message(
-                chat_id=GROUP_ID_DISKUSI, 
-                text="⚠️ Minimal butuh 3 orang untuk mulai!",
-                reply_to_message_id=game_id # <--- BIAR MASUK DISKUSI
-            )
+            return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="⚠️ Minimal butuh 3 orang untuk mulai!", reply_to_message_id=game_id)
 
-        # ... (Logika ambil kata tetap sama) ...
         words_res = supabase.table("uc_words").select("*").execute()
         if not words_res.data: return await context.bot.send_message(chat_id=GROUP_ID_DISKUSI, text="❌ Kata di database kosong!")
         word_pair = random.choice(words_res.data)
@@ -917,41 +837,62 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             role = "Undercover" if pid == undercover_id else "Civilian"
             kata = word_pair['word2'] if pid == undercover_id else word_pair['word1']
             try:
-                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", parse_mode="Markdown")
+                await context.bot.send_message(chat_id=int(pid), text=f"🕵️‍♂️ *Peranmu:* `{role}`\n🤫 *Katamu:* *{kata}*", reply_markup=btn_grup, parse_mode="Markdown")
             except Exception: pass
 
         urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
         await query.edit_message_text(
-            f"🎯 *GAME DIMULAI!*\nCek DM untuk kata rahasia!\n\n🔄 *Urutan Deskripsi:*\n{urutan}\n\n"
+            f"🎯 *GAME DIMULAI!*\nCek DM bot untuk kata rahasia!\n\n🔄 *Urutan Bermain:*\n{urutan}\n\n"
+            f"❗️ *TUGASMU:* Ketik `/vote [katamu]` di grup ini secara bergiliran!\n\n"
             f"⏳ *Waktu: 5 Menit (5 Ronde @1 menit)*", parse_mode="Markdown"
         )
         
         asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, context))
 
-# === UPDATE TIMER (Tambah reply_to_message_id) ===
+# === LOOP TIMER & NOTIF DM ===
 async def run_game_timer(chat_id, game_id, context):
+    group_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{game_id}"
+    btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Ke TKP Diskusi", url=group_link)]])
+    
     for i in range(1, 6):
         await asyncio.sleep(60)
-        # Update status game dari DB untuk mastikan game belum dihapus/selesai
-        res = supabase.table("uc_active_games").select("status").eq("game_id", game_id).execute()
-        if not res.data: return # Game batal
+        res = supabase.table("uc_active_games").select("status, players").eq("game_id", game_id).execute()
+        if not res.data: return 
+        game = res.data[0]
+        if game['status'] != 'playing': return
+        
+        players = game['players']
+        
+        # Buat Rekap ronde berjalan
+        recap = f"⏱️ *Ronde {i} Selesai!*\n\n*Rekap Kata Pemain:*\n"
+        for pid, pdata in players.items():
+            word = pdata.get('current_word', "")
+            display_word = f"*{word}*" if word else "(Tidak menyebutkan kata)"
+            recap += f"- {pdata['name']}: {display_word}\n"
+            
+            # Reset word untuk siap-siap ronde berikutnya
+            players[pid]['current_word'] = ""
+            
+        supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute()
         
         if i < 5: 
-            await context.bot.send_message(
-                chat_id, 
-                f"⏱️ *Ronde {i} selesai!* Masuk ronde {i+1}...", 
-                reply_to_message_id=game_id, # <--- BIAR TETEP DI DISKUSI
-                parse_mode="Markdown"
-            )
+            pesan_ronde = f"{recap}\n🔔 Masuk *Ronde {i+1}*! Silakan diskus dan ketik `/vote [katamu]` lagi!"
+            await context.bot.send_message(chat_id, pesan_ronde, reply_to_message_id=game_id, parse_mode="Markdown")
+            
+            # BC Notif ke DM
+            for pid in players.keys():
+                try: await context.bot.send_message(int(pid), f"🔔 {pesan_ronde}", reply_markup=btn_grup, parse_mode="Markdown")
+                except: pass
     
+    # Fase Voting
     supabase.table("uc_active_games").update({"status": "voting"}).eq("game_id", game_id).execute()
-    await context.bot.send_message(
-        chat_id, 
-        "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai (90 Detik).\nKetik: `/sus @username`", 
-        reply_to_message_id=game_id, # <--- BIAR TETEP DI DISKUSI
-        parse_mode="Markdown"
-    )
+    pesan_vote = "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 90 Detik.\nKetik: `/sus @username` di komentar ini untuk menuduh Undercover!"
+    await context.bot.send_message(chat_id, pesan_vote, reply_to_message_id=game_id, parse_mode="Markdown")
     
+    for pid in players.keys():
+        try: await context.bot.send_message(int(pid), f"🔔 {pesan_vote}", reply_markup=btn_grup, parse_mode="Markdown")
+        except: pass
+        
     await asyncio.sleep(90)
     await tally_votes(chat_id, game_id, context)
 
@@ -971,7 +912,6 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if voter_id not in players: return await update.message.reply_text("❌ Kamu tidak bermain di game ini.")
     
-    # Cari target user_id dari username
     target_id = None
     for pid, pdata in players.items():
         if pdata['username'].lower() == target_username:
@@ -984,7 +924,7 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     votes[voter_id] = target_id
     supabase.table("uc_active_games").update({"votes": votes}).eq("game_id", game['game_id']).execute()
     
-    await update.message.reply_text(f"✅ {update.effective_user.first_name} menuduh @{target_username}!")
+    await update.message.reply_text(f"✅ {update.effective_user.first_name} menuduh @{target_username}!", reply_to_message_id=update.message.message_id)
 
 # === TALLY & REWARDS ===
 async def tally_votes(chat_id, game_id, context):
@@ -997,11 +937,9 @@ async def tally_votes(chat_id, game_id, context):
     players = game['players']
     under_id = str(game['undercover_id'])
     
-    # Hitung suara
     vote_counts = {}
     for target in votes.values(): vote_counts[target] = vote_counts.get(target, 0) + 1
     
-    # Cari yang paling banyak divote
     if vote_counts:
         suspect_id = max(vote_counts, key=vote_counts.get)
         suspect_name = players[suspect_id]['name']
@@ -1019,17 +957,25 @@ async def tally_votes(chat_id, game_id, context):
     else:
         hasil_text += "😈 *UNDERCOVER MENANG!* Kalian salah tangkap!\n\n💰 Hadiah:\n- Undercover: +200 Coins\n- Civilian: +100 Coins"
         
-    await context.bot.send_message(chat_id, hasil_text, parse_mode="Markdown")
+    # Kirim ke Diskusi dengan reply
+    await context.bot.send_message(chat_id, hasil_text, reply_to_message_id=game_id, parse_mode="Markdown")
     
-    # Distribusi Koin
+    group_link = f"https://t.me/c/{str(chat_id).replace('-100', '')}/{game_id}"
+    btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Lihat Hasil Diskusi", url=group_link)]])
+    
+    # Distribusi Koin dan Kirim Notif Game Over ke DM
     for pid in players.keys():
         if is_undercover_caught:
             koin = 100 if pid == under_id else 200
         else:
             koin = 200 if pid == under_id else 100
+            
         await add_kith_coins(int(pid), koin)
         
-    # Hapus DB
+        try:
+            await context.bot.send_message(int(pid), f"🏁 *GAME OVER!*\n\n{hasil_text}", reply_markup=btn_grup, parse_mode="Markdown")
+        except: pass
+        
     supabase.table("uc_active_games").delete().eq("game_id", game_id).execute()
 
 # === REVEAL ROLE (PREMIUM) ===
@@ -1039,11 +985,9 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = supabase.table("uc_active_games").select("*").eq("status", "playing").execute()
     if not res.data: return await update.message.reply_text("❌ Tidak ada game yang sedang berjalan.")
     
-    # Pastikan user ada di game ini
     game = next((g for g in res.data if user_id in g['players']), None)
     if not game: return await update.message.reply_text("❌ Kamu tidak bermain di game aktif manapun.")
     
-    # Cek & Potong Koin
     koin_res = supabase.table("users").select("kith_coins").eq("user_id", int(user_id)).execute()
     saldo = koin_res.data[0]['kith_coins'] if koin_res.data else 0
     if saldo < 500: return await update.message.reply_text(f"❌ Koin tidak cukup. Butuh 500 Coins (Saldomu: {saldo}).")
@@ -1081,20 +1025,15 @@ async def settings(update: Update, context: CallbackContext):
     )
 
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Hanya admin yang bisa eksekusi command ini
     if update.effective_chat.id != ADMIN_GROUP_ID: 
         return
     
     await update.message.reply_text("⏳ Memulai kalkulasi Kith-Coins retroaktif... Mohon tunggu, proses ini butuh waktu.")
-    
     try:
-        # Ambil semua data histori dari menfess_map
         response = supabase.table("menfess_map").select("sender_user_id").execute()
-        
         if not hasattr(response, 'data') or not response.data:
             return await update.message.reply_text("❌ Data menfess map masih kosong.")
             
-        # Hitung frekuensi menfess per user_id pakai dictionary
         user_counts = {}
         for row in response.data:
             uid = row.get("sender_user_id")
@@ -1102,22 +1041,14 @@ async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_counts[uid] = user_counts.get(uid, 0) + 1
                 
         berhasil, gagal = 0, 0
-        
         for uid, count in user_counts.items():
-            reward_coins = count * 50 # Pukul rata 50 koin per menfess lama
-            
+            reward_coins = count * 50
             try:
-                # Ambil saldo eksisting di tabel users
                 user_res = supabase.table("users").select("kith_coins").eq("user_id", uid).execute()
                 current_coins = user_res.data[0].get("kith_coins") if hasattr(user_res, 'data') and user_res.data and user_res.data[0].get("kith_coins") is not None else 0
-                
-                # Update saldo gabungan
                 new_balance = current_coins + reward_coins
-                
-                # Gunakan update biasa, atau upsert jika usernya berpotensi terhapus dari tabel users
                 supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", uid).execute()
                 
-                # Format notifikasi ke user
                 notif_text = (
                     f"🎉 *Kejutan Kith-Coins Retroaktif!*\n\n"
                     f"Terima kasih atas loyalitas kamu! Karena kamu sudah pernah mengirim *{count} menfess* di Kitheons sebelumnya, "
@@ -1125,24 +1056,14 @@ async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🪙 Saldo Koin kamu sekarang: *{new_balance}*\n\n"
                     f"Koin ini bisa kamu tukarkan ke berbagai fitur mendatang seperti *Custom Title Loyalty* dan lain-lain. Pantengin terus update dari admin ya!"
                 )
-                
-                # Broadcast pesannya
                 await context.bot.send_message(chat_id=uid, text=notif_text, parse_mode="Markdown")
                 berhasil += 1
-                
             except Exception as e:
                 logger.error(f"Gagal refresh coin untuk user {uid}: {e}")
                 gagal += 1
-                
-            # Wajib dikasih delay biar nggak kena limit 30 pesan/detik dari Telegram
             await asyncio.sleep(0.1) 
             
-        await update.message.reply_text(
-            f"✅ *Refresh Coin Selesai!*\n\n"
-            f"👤 User berhasil diproses: {berhasil}\n"
-            f"❌ Gagal kirim: {gagal}"
-        )
-        
+        await update.message.reply_text(f"✅ *Refresh Coin Selesai!*\n\n👤 User berhasil diproses: {berhasil}\n❌ Gagal kirim: {gagal}")
     except Exception as e:
         logger.error(f"Error refresh coin: {e}")
         await update.message.reply_text("❌ Terjadi kesalahan saat memproses data database.")
@@ -1163,10 +1084,15 @@ def main():
     application.add_handler(CommandHandler('setrequired', set_required_channels))
     application.add_handler(CommandHandler('refreshcoin', refresh_coin))
 
+    # Fitur Profil & Leaderboard
+    application.add_handler(CommandHandler('profile', cek_profile))
+    application.add_handler(CommandHandler(['leaderboard', 'leadboard'], leaderboard)) # Sengaja support typo kamu hahaha
+
     # Fitur Game
     application.add_handler(CommandHandler('adducword', add_uc_word))
     application.add_handler(CommandHandler('undercover', start_undercover))
-    application.add_handler(CommandHandler('sus', sus_vote))
+    application.add_handler(CommandHandler('vote', submit_word)) # Pemain submit kata dengan /vote
+    application.add_handler(CommandHandler('sus', sus_vote))     # Pemain menuduh target dengan /sus
     application.add_handler(CommandHandler('revealrole', reveal_role))
     
     # Tangkap klik Gabung / Mulai game
