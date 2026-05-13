@@ -1,7 +1,9 @@
 ffmpeg
 libimage-exiftool-perl
+libblas3
+liblapack3
+libatlas-base-dev
+libopenblas0
 pulseaudio
 libpulse0
 libpulse-mainloop-glib0
-libblas3
-liblapack3
