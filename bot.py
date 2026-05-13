@@ -9,6 +9,7 @@ import uuid
 import subprocess
 import shutil
 import asyncio
+import httpx
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
@@ -36,12 +37,13 @@ bot_active = True
 MENFESS_MODE = "auto" # Cache default
 TITLE_PRICE = 500 # Harga Custom Title
 
-# === KONFIGURASI LIVE PHOTO ===
-# Wajib ada file template JPG dari Live Photo asli iPhone di root project.
-# File ini dipakai untuk membawa Apple MakerNote, karena ExifTool tidak bisa membuat MakerNote Apple dari nol di Linux/Heroku.
-LIVE_TEMPLATE_IMAGE = os.environ.get("LIVE_TEMPLATE_IMAGE", "live_template.HEIC")
-LIVE_MAX_DURATION = float(os.environ.get("LIVE_MAX_DURATION", "3.0"))
-LIVE_MAX_FILE_SIZE_MB = int(os.environ.get("LIVE_MAX_FILE_SIZE_MB", "45"))
+# === KONFIGURASI LIVE PHOTO TELEGRAM NATIVE ===
+# sendLivePhoto dari Bot API mewajibkan 2 file: live_photo video + static photo.
+# Video live photo wajib <= 10 detik dan <= 10 MB, jadi input akan dipotong/di-compress via FFmpeg.
+LIVE_MAX_DURATION = min(float(os.environ.get("LIVE_MAX_DURATION", "9.8")), 9.8)
+LIVE_MAX_INPUT_FILE_SIZE_MB = int(os.environ.get("LIVE_MAX_INPUT_FILE_SIZE_MB", "50"))
+LIVE_MAX_OUTPUT_FILE_SIZE_MB = min(int(os.environ.get("LIVE_MAX_OUTPUT_FILE_SIZE_MB", "10")), 10)
+TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 
 WAITING_USERNAME = 1
 
@@ -101,10 +103,9 @@ async def update_banned_users_cache():
         logger.error(f"Gagal memuat banned users: {e}")
 
 async def check_system_tools():
-    """Mengecek apakah FFmpeg dan ExifTool sudah terinstal di server."""
+    """Mengecek apakah FFmpeg sudah terinstal di server untuk fitur /live."""
     tools = {
-        "FFmpeg": "ffmpeg",
-        "ExifTool": "exiftool"
+        "FFmpeg": "ffmpeg"
     }
     
     for name, cmd in tools.items():
@@ -120,7 +121,7 @@ async def on_startup(application: Application):
         me = await application.bot.get_me()
         logger.info(f"✅ Bot siap: @{me.username} (id={me.id})")
 
-        # 2. Cek Peralatan Tempur (FFmpeg & ExifTool)
+        # 2. Cek FFmpeg untuk fitur /live
         await check_system_tools()
         
         # 3. Load semua cache dari Database
@@ -1106,6 +1107,9 @@ def _get_video_file_from_message(message):
     if message.video:
         return message.video
 
+    if message.animation:
+        return message.animation
+
     if message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
         return message.document
 
@@ -1113,6 +1117,8 @@ def _get_video_file_from_message(message):
         replied = message.reply_to_message
         if replied.video:
             return replied.video
+        if replied.animation:
+            return replied.animation
         if replied.document and replied.document.mime_type and replied.document.mime_type.startswith("video/"):
             return replied.document
 
@@ -1139,137 +1145,129 @@ async def _run_cmd(cmd, timeout=180):
     return result
 
 
-async def _read_metadata_value(exif_exe, path, tags):
-    """Baca satu nilai metadata dari beberapa kemungkinan nama tag ExifTool."""
-    for tag in tags:
-        result = await _run_cmd([exif_exe, "-s3", tag, path], timeout=60)
-        value = (result.stdout or "").strip().splitlines()
-        if value and value[0].strip():
-            return value[0].strip()
-    return ""
+def _file_size_mb(path):
+    if not os.path.exists(path):
+        return 0.0
+    return os.path.getsize(path) / (1024 * 1024)
 
 
-def _replace_uuid_bytes(path, old_uuid, new_uuid):
-    """Ganti UUID di MakerNote secara byte-level. Panjang UUID sama-sama 36 karakter, jadi struktur EXIF tetap aman."""
-    if not old_uuid or not new_uuid or len(old_uuid) != len(new_uuid):
-        return False
+async def _encode_video_for_native_live_photo(ffmpeg_exe, input_path, output_video):
+    """Buat video MP4 <= 10 detik dan <= 10 MB untuk parameter live_photo."""
+    max_bytes = LIVE_MAX_OUTPUT_FILE_SIZE_MB * 1024 * 1024
 
-    with open(path, "rb") as f:
-        data = f.read()
+    # Beberapa tingkat kompresi. Normalnya attempt pertama sudah jauh di bawah 10 MB.
+    attempts = [
+        {"width": 720, "video_bitrate": "3500k", "maxrate": "4200k", "bufsize": "8400k", "audio_bitrate": "96k"},
+        {"width": 540, "video_bitrate": "2200k", "maxrate": "2600k", "bufsize": "5200k", "audio_bitrate": "80k"},
+        {"width": 480, "video_bitrate": "1400k", "maxrate": "1700k", "bufsize": "3400k", "audio_bitrate": "64k"},
+    ]
 
-    old_bytes = old_uuid.encode("ascii", errors="ignore")
-    new_bytes = new_uuid.encode("ascii", errors="ignore")
+    last_detail = ""
+    for attempt in attempts:
+        try:
+            if os.path.exists(output_video):
+                os.remove(output_video)
 
-    if old_bytes not in data:
-        return False
+            vf = f"scale={attempt['width']}:-2:force_original_aspect_ratio=decrease,setsar=1,fps=30"
+            await _run_cmd([
+                ffmpeg_exe,
+                "-hide_banner", "-loglevel", "error",
+                "-i", input_path,
+                "-t", str(LIVE_MAX_DURATION),
+                "-map", "0:v:0",
+                "-map", "0:a?",
+                "-vf", vf,
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-b:v", attempt["video_bitrate"],
+                "-maxrate", attempt["maxrate"],
+                "-bufsize", attempt["bufsize"],
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", attempt["audio_bitrate"],
+                "-movflags", "+faststart",
+                "-y", output_video
+            ], timeout=240)
 
-    with open(path, "wb") as f:
-        f.write(data.replace(old_bytes, new_bytes))
+            if not os.path.exists(output_video) or os.path.getsize(output_video) == 0:
+                last_detail = "FFmpeg tidak menghasilkan file video."
+                continue
 
-    return True
+            size = os.path.getsize(output_video)
+            if size <= max_bytes:
+                return size
+
+            last_detail = f"hasil {size / (1024 * 1024):.2f} MB masih melebihi batas {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB"
+        except RuntimeError as e:
+            last_detail = str(e)
+
+    raise RuntimeError(f"Gagal membuat video live_photo <= {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB. Detail terakhir: {last_detail}")
 
 
-async def _prepare_live_photo_still(ffmpeg_exe, exif_exe, input_path, output_jpg, template_jpg, desired_asset_id):
-    # Ambil frame dari video pakai FFmpeg, jadi tidak butuh OpenCV lagi.
+async def _extract_static_photo_for_native_live_photo(ffmpeg_exe, video_path, output_photo):
+    """Buat static photo JPEG untuk parameter photo di sendLivePhoto."""
+    if os.path.exists(output_photo):
+        os.remove(output_photo)
+
     await _run_cmd([
         ffmpeg_exe,
         "-hide_banner", "-loglevel", "error",
         "-ss", "0.2",
-        "-i", input_path,
+        "-i", video_path,
         "-frames:v", "1",
         "-q:v", "2",
-        "-y", output_jpg
-    ])
+        "-y", output_photo
+    ], timeout=120)
 
-    if not os.path.exists(output_jpg) or os.path.getsize(output_jpg) == 0:
-        raise RuntimeError("Gagal membuat JPG thumbnail dari video.")
+    if not os.path.exists(output_photo) or os.path.getsize(output_photo) == 0:
+        raise RuntimeError("Gagal membuat static photo JPEG untuk sendLivePhoto.")
 
-    # Copy Apple MakerNote dari template Live Photo asli.
-    # ExifTool di Linux tidak bisa membuat Apple MakerNote ContentIdentifier dari nol,
-    # tapi bisa menyalin blok MakerNote dari file yang memang sudah punya tag itu.
-    await _run_cmd([
-        exif_exe,
-        "-overwrite_original",
-        "-TagsFromFile", template_jpg,
-        "-All:All<All:All",
-        output_jpg
-    ], timeout=90)
-
-    old_asset_id = await _read_metadata_value(
-        exif_exe,
-        output_jpg,
-        ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
-    )
-
-    if not old_asset_id:
-        raise RuntimeError("Template JPG tidak punya Apple ContentIdentifier. Pakai still image dari Live Photo iPhone asli sebagai live_template.HEIC.")
-
-    # Coba bikin ID unik per request dengan mengganti UUID yang ada di MakerNote.
-    replaced = await asyncio.to_thread(_replace_uuid_bytes, output_jpg, old_asset_id, desired_asset_id)
-    if replaced:
-        verified_asset_id = await _read_metadata_value(
-            exif_exe,
-            output_jpg,
-            ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
-        )
-        if verified_asset_id == desired_asset_id:
-            return desired_asset_id
-
-    # Fallback: tetap pakai ID template. Ini masih bisa dikenali sebagai Live Photo,
-    # tapi sebaiknya binary replace berhasil agar tiap hasil punya ID unik.
-    logger.warning("Tidak bisa mengganti UUID di MakerNote; memakai ContentIdentifier dari template.")
-    return old_asset_id
+    # Bot API membatasi photo 10 MB. Frame dari video 720p biasanya jauh di bawah ini.
+    if os.path.getsize(output_photo) > 10 * 1024 * 1024:
+        raise RuntimeError(f"Static photo terlalu besar: {_file_size_mb(output_photo):.2f} MB.")
 
 
-async def _prepare_live_photo_mov(ffmpeg_exe, exif_exe, input_path, output_jpg, output_mov):
-    # Convert ke MOV H.264 yang ramah iOS. Durasi dipotong agar file bot tidak berat.
-    await _run_cmd([
-        ffmpeg_exe,
-        "-hide_banner", "-loglevel", "error",
-        "-i", input_path,
-        "-t", str(LIVE_MAX_DURATION),
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-vf", "scale='min(1080,iw)':-2,setsar=1",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        "-f", "mov",
-        "-y", output_mov
-    ], timeout=240)
+async def _send_native_live_photo(context, chat_id, live_photo_path, photo_path, caption, reply_to_message_id=None, message_thread_id=None):
+    """Panggil Bot API sendLivePhoto langsung karena library python-telegram-bot bisa jadi belum support method baru."""
+    token = BOT_TOKEN or getattr(context.bot, "token", None)
+    if not token:
+        raise RuntimeError("BOT_TOKEN belum tersedia di environment variables.")
 
-    if not os.path.exists(output_mov) or os.path.getsize(output_mov) == 0:
-        raise RuntimeError("Gagal membuat MOV dari video.")
+    url = f"{TELEGRAM_API_BASE.rstrip('/')}/bot{token}/sendLivePhoto"
+    data = {
+        "chat_id": str(chat_id),
+        "caption": caption,
+    }
 
-    # Salin ContentIdentifier dari JPG ke MOV. Ini mengikuti pola ExifTool yang terbukti:
-    # Keys:ContentIdentifier di MOV harus sama dengan Apple:ContentIdentifier di still image.
-    await _run_cmd([
-        exif_exe,
-        "-overwrite_original",
-        "-TagsFromFile", output_jpg,
-        "-Keys:ContentIdentifier<Apple:ContentIdentifier",
-        output_mov
-    ], timeout=90)
+    if message_thread_id:
+        data["message_thread_id"] = str(message_thread_id)
 
-    jpg_asset_id = await _read_metadata_value(
-        exif_exe,
-        output_jpg,
-        ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
-    )
-    mov_asset_id = await _read_metadata_value(
-        exif_exe,
-        output_mov,
-        ["-Keys:ContentIdentifier", "-ContentIdentifier", "-MediaGroupUUID"]
-    )
+    if reply_to_message_id:
+        data["reply_parameters"] = json.dumps({
+            "message_id": reply_to_message_id,
+            "allow_sending_without_reply": True
+        })
 
-    if not jpg_asset_id or not mov_asset_id or jpg_asset_id != mov_asset_id:
-        raise RuntimeError(f"Metadata Live Photo tidak cocok. JPG={jpg_asset_id or '-'} MOV={mov_asset_id or '-'}")
+    timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=180.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        with open(live_photo_path, "rb") as live_file, open(photo_path, "rb") as photo_file:
+            files = {
+                "live_photo": ("live_photo.mp4", live_file, "video/mp4"),
+                "photo": ("photo.jpg", photo_file, "image/jpeg"),
+            }
+            response = await client.post(url, data=data, files=files)
 
-    return jpg_asset_id
+    try:
+        payload = response.json()
+    except ValueError:
+        raise RuntimeError(f"Telegram API tidak mengembalikan JSON. HTTP {response.status_code}: {response.text[:1000]}")
+
+    if response.status_code >= 400 or not payload.get("ok"):
+        description = payload.get("description") or response.text[:1000]
+        error_code = payload.get("error_code", response.status_code)
+        raise RuntimeError(f"Telegram sendLivePhoto gagal ({error_code}): {description}")
+
+    return payload.get("result")
 
 
 async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1284,88 +1282,75 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     ffmpeg_exe = shutil.which("ffmpeg")
-    exif_exe = shutil.which("exiftool")
-    template_jpg = LIVE_TEMPLATE_IMAGE
-
-    if not ffmpeg_exe or not exif_exe:
+    if not ffmpeg_exe:
         await msg.reply_text(
-            "❌ FFmpeg/ExifTool belum kebaca di server.\n"
-            "Pastikan Aptfile berisi ffmpeg, libimage-exiftool-perl, pulseaudio, libpulse0."
-        )
-        return
-
-    if not os.path.exists(template_jpg):
-        await msg.reply_text(
-            "❌ Template Live Photo belum ada.\n\n"
-            f"Upload 1 file JPG still dari Live Photo iPhone asli ke root project dengan nama `{template_jpg}`.\n"
-            "File template ini wajib karena Heroku/Linux tidak bisa membuat Apple MakerNote Live Photo dari nol.",
+            "❌ FFmpeg belum kebaca di server.\n"
+            "Pastikan Aptfile berisi `ffmpeg`, lalu deploy ulang.",
             parse_mode="Markdown"
         )
         return
 
     file_size = getattr(video, "file_size", 0) or 0
-    max_bytes = LIVE_MAX_FILE_SIZE_MB * 1024 * 1024
-    if file_size and file_size > max_bytes:
-        await msg.reply_text(f"❌ Videonya terlalu besar. Maksimal {LIVE_MAX_FILE_SIZE_MB} MB untuk fitur /live.")
+    max_input_bytes = LIVE_MAX_INPUT_FILE_SIZE_MB * 1024 * 1024
+    if file_size and file_size > max_input_bytes:
+        await msg.reply_text(
+            f"❌ Videonya terlalu besar untuk diproses di Heroku. Maksimal input {LIVE_MAX_INPUT_FILE_SIZE_MB} MB."
+        )
         return
 
-    status_msg = await msg.reply_text("⏳ Memproses Live Photo...\nTahap 1/4: download video")
+    original_duration = getattr(video, "duration", None)
+    duration_note = ""
+    if original_duration and original_duration > LIVE_MAX_DURATION:
+        duration_note = f"\nCatatan: video dipotong jadi {LIVE_MAX_DURATION:.0f} detik agar sesuai batas Telegram."
+
+    status_msg = await msg.reply_text("⏳ Memproses Live Photo native Telegram...\nTahap 1/4: download video")
 
     asset_id = str(uuid.uuid4()).upper()
-    base_name = f"LivePhoto_{asset_id[:8]}"
     input_path = f"input_{asset_id}.mp4"
-    output_jpg = f"{base_name}.jpg"
-    output_mov = f"{base_name}.mov"
+    output_live_photo = f"live_photo_{asset_id}.mp4"
+    output_photo = f"photo_{asset_id}.jpg"
 
     try:
         telegram_file = await video.get_file()
         await telegram_file.download_to_drive(input_path)
 
-        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 2/4: membuat still image + Apple MakerNote")
-        final_asset_id = await _prepare_live_photo_still(
-            ffmpeg_exe,
-            exif_exe,
-            input_path,
-            output_jpg,
-            template_jpg,
-            asset_id
+        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 2/4: compress video <= 10 detik & <= 10 MB")
+        output_size = await _encode_video_for_native_live_photo(ffmpeg_exe, input_path, output_live_photo)
+
+        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 3/4: buat static photo")
+        await _extract_static_photo_for_native_live_photo(ffmpeg_exe, output_live_photo, output_photo)
+
+        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 4/4: kirim via sendLivePhoto")
+        caption = (
+            "✅ Live Photo berhasil dibuat."
+            f"\nDurasi maksimal: {LIVE_MAX_DURATION:.0f} detik."
+            f"\nUkuran video: {output_size / (1024 * 1024):.2f} MB."
+            f"{duration_note}"
         )
 
-        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 3/4: membuat MOV + metadata")
-        final_asset_id = await _prepare_live_photo_mov(
-            ffmpeg_exe,
-            exif_exe,
-            input_path,
-            output_jpg,
-            output_mov
+        await _send_native_live_photo(
+            context=context,
+            chat_id=msg.chat_id,
+            live_photo_path=output_live_photo,
+            photo_path=output_photo,
+            caption=caption,
+            reply_to_message_id=msg.message_id,
+            message_thread_id=getattr(msg, "message_thread_id", None)
         )
 
-        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 4/4: mengirim file")
-
-        caption_1 = (
-            "✅ Live Photo 1/2 — Still Image\n"
-            "Simpan file JPG ini bersama file MOV berikutnya. Jangan kirim ulang sebagai foto biasa."
-        )
-        caption_2 = (
-            "✅ Live Photo 2/2 — Motion Video\n\n"
-            f"Asset ID: `{final_asset_id}`\n"
-            "Import JPG + MOV ini bersamaan ke Photos/Files/AirDrop agar dikenali sebagai Live Photo."
-        )
-
-        with open(output_jpg, "rb") as img:
-            await msg.reply_document(document=img, filename=f"{base_name}.jpg", caption=caption_1)
-
-        with open(output_mov, "rb") as mov:
-            await msg.reply_document(document=mov, filename=f"{base_name}.mov", caption=caption_2, parse_mode="Markdown")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
     except RuntimeError as e:
-        logger.error(f"Live Photo Runtime Error: {e}")
-        await msg.reply_text(f"❌ Gagal bikin Live Photo.\n\nDetail:\n`{str(e)[:1500]}`", parse_mode="Markdown")
+        logger.error(f"Native Live Photo Runtime Error: {e}")
+        await msg.reply_text(f"❌ Gagal kirim Live Photo native.\n\nDetail:\n{str(e)[:1500]}")
     except Exception as e:
-        logger.exception("Live Photo unexpected error")
-        await msg.reply_text(f"❌ Error tidak terduga: `{str(e)[:1500]}`", parse_mode="Markdown")
+        logger.exception("Native Live Photo unexpected error")
+        await msg.reply_text(f"❌ Error tidak terduga:\n{str(e)[:1500]}")
     finally:
-        for f in [input_path, output_jpg, output_mov]:
+        for f in [input_path, output_live_photo, output_photo]:
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -1375,7 +1360,6 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await status_msg.delete()
         except Exception:
             pass
-
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
