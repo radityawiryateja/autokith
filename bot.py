@@ -7,7 +7,6 @@ import os
 import random
 import uuid
 import subprocess
-import cv2
 import shutil
 import asyncio
 
@@ -36,6 +35,13 @@ logger = logging.getLogger(__name__)
 bot_active = True
 MENFESS_MODE = "auto" # Cache default
 TITLE_PRICE = 500 # Harga Custom Title
+
+# === KONFIGURASI LIVE PHOTO ===
+# Wajib ada file template JPG dari Live Photo asli iPhone di root project.
+# File ini dipakai untuk membawa Apple MakerNote, karena ExifTool tidak bisa membuat MakerNote Apple dari nol di Linux/Heroku.
+LIVE_TEMPLATE_JPG = os.environ.get("LIVE_TEMPLATE_JPG", "live_template.jpg")
+LIVE_MAX_DURATION = float(os.environ.get("LIVE_MAX_DURATION", "3.0"))
+LIVE_MAX_FILE_SIZE_MB = int(os.environ.get("LIVE_MAX_FILE_SIZE_MB", "45"))
 
 WAITING_USERNAME = 1
 
@@ -1092,87 +1098,284 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
     )
 
+def _get_video_file_from_message(message):
+    """Ambil objek video Telegram dari pesan langsung atau pesan yang di-reply."""
+    if not message:
+        return None
+
+    if message.video:
+        return message.video
+
+    if message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
+        return message.document
+
+    if message.reply_to_message:
+        replied = message.reply_to_message
+        if replied.video:
+            return replied.video
+        if replied.document and replied.document.mime_type and replied.document.mime_type.startswith("video/"):
+            return replied.document
+
+    return None
+
+
+async def _run_cmd(cmd, timeout=180):
+    """Jalankan command berat di thread supaya polling bot tidak nge-freeze."""
+    def _runner():
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout
+        )
+
+    result = await asyncio.to_thread(_runner)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "Unknown subprocess error"
+        raise RuntimeError(detail[-1800:])
+    return result
+
+
+async def _read_metadata_value(exif_exe, path, tags):
+    """Baca satu nilai metadata dari beberapa kemungkinan nama tag ExifTool."""
+    for tag in tags:
+        result = await _run_cmd([exif_exe, "-s3", tag, path], timeout=60)
+        value = (result.stdout or "").strip().splitlines()
+        if value and value[0].strip():
+            return value[0].strip()
+    return ""
+
+
+def _replace_uuid_bytes(path, old_uuid, new_uuid):
+    """Ganti UUID di MakerNote secara byte-level. Panjang UUID sama-sama 36 karakter, jadi struktur EXIF tetap aman."""
+    if not old_uuid or not new_uuid or len(old_uuid) != len(new_uuid):
+        return False
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    old_bytes = old_uuid.encode("ascii", errors="ignore")
+    new_bytes = new_uuid.encode("ascii", errors="ignore")
+
+    if old_bytes not in data:
+        return False
+
+    with open(path, "wb") as f:
+        f.write(data.replace(old_bytes, new_bytes))
+
+    return True
+
+
+async def _prepare_live_photo_still(ffmpeg_exe, exif_exe, input_path, output_jpg, template_jpg, desired_asset_id):
+    # Ambil frame dari video pakai FFmpeg, jadi tidak butuh OpenCV lagi.
+    await _run_cmd([
+        ffmpeg_exe,
+        "-hide_banner", "-loglevel", "error",
+        "-ss", "0.2",
+        "-i", input_path,
+        "-frames:v", "1",
+        "-q:v", "2",
+        "-y", output_jpg
+    ])
+
+    if not os.path.exists(output_jpg) or os.path.getsize(output_jpg) == 0:
+        raise RuntimeError("Gagal membuat JPG thumbnail dari video.")
+
+    # Copy Apple MakerNote dari template Live Photo asli.
+    # ExifTool di Linux tidak bisa membuat Apple MakerNote ContentIdentifier dari nol,
+    # tapi bisa menyalin blok MakerNote dari file yang memang sudah punya tag itu.
+    await _run_cmd([
+        exif_exe,
+        "-overwrite_original",
+        "-TagsFromFile", template_jpg,
+        "-All:All<All:All",
+        output_jpg
+    ], timeout=90)
+
+    old_asset_id = await _read_metadata_value(
+        exif_exe,
+        output_jpg,
+        ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
+    )
+
+    if not old_asset_id:
+        raise RuntimeError("Template JPG tidak punya Apple ContentIdentifier. Pakai still image dari Live Photo iPhone asli sebagai live_template.jpg.")
+
+    # Coba bikin ID unik per request dengan mengganti UUID yang ada di MakerNote.
+    replaced = await asyncio.to_thread(_replace_uuid_bytes, output_jpg, old_asset_id, desired_asset_id)
+    if replaced:
+        verified_asset_id = await _read_metadata_value(
+            exif_exe,
+            output_jpg,
+            ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
+        )
+        if verified_asset_id == desired_asset_id:
+            return desired_asset_id
+
+    # Fallback: tetap pakai ID template. Ini masih bisa dikenali sebagai Live Photo,
+    # tapi sebaiknya binary replace berhasil agar tiap hasil punya ID unik.
+    logger.warning("Tidak bisa mengganti UUID di MakerNote; memakai ContentIdentifier dari template.")
+    return old_asset_id
+
+
+async def _prepare_live_photo_mov(ffmpeg_exe, exif_exe, input_path, output_jpg, output_mov):
+    # Convert ke MOV H.264 yang ramah iOS. Durasi dipotong agar file bot tidak berat.
+    await _run_cmd([
+        ffmpeg_exe,
+        "-hide_banner", "-loglevel", "error",
+        "-i", input_path,
+        "-t", str(LIVE_MAX_DURATION),
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-vf", "scale='min(1080,iw)':-2,setsar=1",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-f", "mov",
+        "-y", output_mov
+    ], timeout=240)
+
+    if not os.path.exists(output_mov) or os.path.getsize(output_mov) == 0:
+        raise RuntimeError("Gagal membuat MOV dari video.")
+
+    # Salin ContentIdentifier dari JPG ke MOV. Ini mengikuti pola ExifTool yang terbukti:
+    # Keys:ContentIdentifier di MOV harus sama dengan Apple:ContentIdentifier di still image.
+    await _run_cmd([
+        exif_exe,
+        "-overwrite_original",
+        "-TagsFromFile", output_jpg,
+        "-Keys:ContentIdentifier<Apple:ContentIdentifier",
+        output_mov
+    ], timeout=90)
+
+    jpg_asset_id = await _read_metadata_value(
+        exif_exe,
+        output_jpg,
+        ["-Apple:ContentIdentifier", "-Apple:MediaGroupUUID", "-ContentIdentifier", "-MediaGroupUUID"]
+    )
+    mov_asset_id = await _read_metadata_value(
+        exif_exe,
+        output_mov,
+        ["-Keys:ContentIdentifier", "-ContentIdentifier", "-MediaGroupUUID"]
+    )
+
+    if not jpg_asset_id or not mov_asset_id or jpg_asset_id != mov_asset_id:
+        raise RuntimeError(f"Metadata Live Photo tidak cocok. JPG={jpg_asset_id or '-'} MOV={mov_asset_id or '-'}")
+
+    return jpg_asset_id
+
+
 async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. Cek apakah ada video di pesan tersebut atau di pesan yang di-reply
-    video = None
-    if update.message.video:
-        video = update.message.video
-    elif update.message.reply_to_message and update.message.reply_to_message.video:
-        video = update.message.reply_to_message.video
+    msg = update.message
+    video = _get_video_file_from_message(msg)
 
     if not video:
-        await update.message.reply_text("Silakan kirim video dengan caption /live atau balas video dengan /live")
-        return
-
-    # 2. Cari path alat tempur (FFmpeg & ExifTool) secara dinamis
-    ffmpeg_exe = shutil.which('ffmpeg')
-    exif_exe = shutil.which('exiftool')
-
-    if not ffmpeg_exe or not exif_exe:
-        await update.message.reply_text(
-            "❌ Alat sistem tidak ditemukan!\n"
-            "Pastikan Aptfile sudah benar dan Heroku Config Vars (PATH & PERL5LIB) sudah di-set."
+        await msg.reply_text(
+            "Silakan kirim video dengan caption /live, atau reply/balas video dengan /live.\n"
+            "Bisa juga kirim video sebagai file dokumen."
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ Memproses Live Photo...")
+    ffmpeg_exe = shutil.which("ffmpeg")
+    exif_exe = shutil.which("exiftool")
+    template_jpg = LIVE_TEMPLATE_JPG
 
-    # Identitas unik untuk sinkronisasi iOS
+    if not ffmpeg_exe or not exif_exe:
+        await msg.reply_text(
+            "❌ FFmpeg/ExifTool belum kebaca di server.\n"
+            "Pastikan Aptfile berisi ffmpeg, libimage-exiftool-perl, pulseaudio, libpulse0."
+        )
+        return
+
+    if not os.path.exists(template_jpg):
+        await msg.reply_text(
+            "❌ Template Live Photo belum ada.\n\n"
+            f"Upload 1 file JPG still dari Live Photo iPhone asli ke root project dengan nama `{template_jpg}`.\n"
+            "File template ini wajib karena Heroku/Linux tidak bisa membuat Apple MakerNote Live Photo dari nol.",
+            parse_mode="Markdown"
+        )
+        return
+
+    file_size = getattr(video, "file_size", 0) or 0
+    max_bytes = LIVE_MAX_FILE_SIZE_MB * 1024 * 1024
+    if file_size and file_size > max_bytes:
+        await msg.reply_text(f"❌ Videonya terlalu besar. Maksimal {LIVE_MAX_FILE_SIZE_MB} MB untuk fitur /live.")
+        return
+
+    status_msg = await msg.reply_text("⏳ Memproses Live Photo...\nTahap 1/4: download video")
+
     asset_id = str(uuid.uuid4()).upper()
+    base_name = f"LivePhoto_{asset_id[:8]}"
     input_path = f"input_{asset_id}.mp4"
-    output_jpg = f"img_{asset_id}.jpg"
-    output_mov = f"vid_{asset_id}.mov"
+    output_jpg = f"{base_name}.jpg"
+    output_mov = f"{base_name}.mov"
 
     try:
-        # 3. Download video
-        file = await video.get_file()
-        await file.download_to_drive(input_path)
+        telegram_file = await video.get_file()
+        await telegram_file.download_to_drive(input_path)
 
-        # 4. Ambil Frame Pertama untuk Thumbnail (OpenCV)
-        cap = cv2.VideoCapture(input_path)
-        ret, frame = cap.read()
-        if ret:
-            cv2.imwrite(output_jpg, frame)
-        cap.release()
+        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 2/4: membuat still image + Apple MakerNote")
+        final_asset_id = await _prepare_live_photo_still(
+            ffmpeg_exe,
+            exif_exe,
+            input_path,
+            output_jpg,
+            template_jpg,
+            asset_id
+        )
 
-        if not os.path.exists(output_jpg):
-            raise Exception("Gagal membuat thumbnail dari video.")
+        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 3/4: membuat MOV + metadata")
+        final_asset_id = await _prepare_live_photo_mov(
+            ffmpeg_exe,
+            exif_exe,
+            input_path,
+            output_jpg,
+            output_mov
+        )
 
-        # 5. Inject Metadata ke JPG (Pakai path exif_exe)
-        subprocess.run([
-            exif_exe, '-overwrite_original',
-            f'-XMP:ContentIdentifier={asset_id}',
-            output_jpg
-        ], check=True)
+        await status_msg.edit_text("⏳ Memproses Live Photo...\nTahap 4/4: mengirim file")
 
-        # 6. Convert & Inject Metadata ke MOV (Pakai path ffmpeg_exe)
-        subprocess.run([
-            ffmpeg_exe, '-i', input_path,
-            '-metadata', f'com.apple.quicktime.content.identifier={asset_id}',
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-            '-y', output_mov
-        ], check=True)
+        caption_1 = (
+            "✅ Live Photo 1/2 — Still Image\n"
+            "Simpan file JPG ini bersama file MOV berikutnya. Jangan kirim ulang sebagai foto biasa."
+        )
+        caption_2 = (
+            "✅ Live Photo 2/2 — Motion Video\n\n"
+            f"Asset ID: `{final_asset_id}`\n"
+            "Import JPG + MOV ini bersamaan ke Photos/Files/AirDrop agar dikenali sebagai Live Photo."
+        )
 
-        # 7. Kirim sebagai Dokumen (agar metadata tidak hilang)
-        with open(output_jpg, 'rb') as img, open(output_mov, 'rb') as vid:
-            await update.message.reply_document(document=img, filename=f"LivePhoto_{asset_id[:8]}.jpg", caption="1. Simpan Gambar ke Photos")
-            await update.message.reply_document(document=vid, filename=f"LivePhoto_{asset_id[:8]}.mov", caption="2. Simpan Video ke Photos\n\nSetelah keduanya disimpan, iOS akan otomatis menggabungkannya.")
+        with open(output_jpg, "rb") as img:
+            await msg.reply_document(document=img, filename=f"{base_name}.jpg", caption=caption_1)
 
-    except subprocess.CalledProcessError as e:
-        await update.message.reply_text(f"❌ Gagal memproses metadata (System Error).")
-        print(f"Subprocess Error: {e}")
+        with open(output_mov, "rb") as mov:
+            await msg.reply_document(document=mov, filename=f"{base_name}.mov", caption=caption_2, parse_mode="Markdown")
+
+    except RuntimeError as e:
+        logger.error(f"Live Photo Runtime Error: {e}")
+        await msg.reply_text(f"❌ Gagal bikin Live Photo.\n\nDetail:\n`{str(e)[:1500]}`", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-    
+        logger.exception("Live Photo unexpected error")
+        await msg.reply_text(f"❌ Error tidak terduga: `{str(e)[:1500]}`", parse_mode="Markdown")
     finally:
-        # 8. Hapus file sampah agar disk server nggak penuh
         for f in [input_path, output_jpg, output_mov]:
-            if os.path.exists(f):
-                os.remove(f)
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except Exception:
+                pass
         try:
             await status_msg.delete()
-        except:
+        except Exception:
             pass
+
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
