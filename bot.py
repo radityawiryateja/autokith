@@ -696,7 +696,7 @@ def main():
 
     # Handler Grup Comsect & Admin
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
-    application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
+    application.add_handler(CallbackQueryHandler(handle_callback_review, pattern=r"^mf\|"))
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
 
     # Fall-back Custom Command Handler
