@@ -723,7 +723,7 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === MAIN PROCESS RUNNER ===
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('menu', show_menu))
@@ -744,8 +744,6 @@ def main():
     # Handler Pesan Biasa & Media (Termasuk Menfess Auto & Manual)
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_pesan))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.TEXT, handle_pesan))
-
-    application.job_queue.run_once(on_startup, 1)
 
     logger.info("✅ Membangun bot selesai. Menjalankan polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
