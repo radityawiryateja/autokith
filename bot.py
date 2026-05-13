@@ -8,6 +8,7 @@ import random
 import uuid
 import subprocess
 import cv2
+import shutil
 import asyncio
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
@@ -1092,7 +1093,7 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cek apakah ada video di pesan tersebut atau di pesan yang di-reply
+    # 1. Cek apakah ada video di pesan tersebut atau di pesan yang di-reply
     video = None
     if update.message.video:
         video = update.message.video
@@ -1101,6 +1102,17 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not video:
         await update.message.reply_text("Silakan kirim video dengan caption /live atau balas video dengan /live")
+        return
+
+    # 2. Cari path alat tempur (FFmpeg & ExifTool) secara dinamis
+    ffmpeg_exe = shutil.which('ffmpeg')
+    exif_exe = shutil.which('exiftool')
+
+    if not ffmpeg_exe or not exif_exe:
+        await update.message.reply_text(
+            "❌ Alat sistem tidak ditemukan!\n"
+            "Pastikan Aptfile sudah benar dan Heroku Config Vars (PATH & PERL5LIB) sudah di-set."
+        )
         return
 
     status_msg = await update.message.reply_text("⏳ Memproses Live Photo...")
@@ -1112,45 +1124,55 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     output_mov = f"vid_{asset_id}.mov"
 
     try:
-        # Download video
+        # 3. Download video
         file = await video.get_file()
         await file.download_to_drive(input_path)
 
-        # 1. Ambil Frame Pertama untuk Thumbnail
+        # 4. Ambil Frame Pertama untuk Thumbnail (OpenCV)
         cap = cv2.VideoCapture(input_path)
         ret, frame = cap.read()
         if ret:
             cv2.imwrite(output_jpg, frame)
         cap.release()
 
-        # 2. Inject Metadata ke JPG (ExifTool wajib terinstal di OS)
+        if not os.path.exists(output_jpg):
+            raise Exception("Gagal membuat thumbnail dari video.")
+
+        # 5. Inject Metadata ke JPG (Pakai path exif_exe)
         subprocess.run([
-            'exiftool', '-overwrite_original',
+            exif_exe, '-overwrite_original',
             f'-ContentIdentifier={asset_id}',
             output_jpg
         ], check=True)
 
-        # 3. Convert & Inject Metadata ke MOV (FFmpeg wajib terinstal di OS)
+        # 6. Convert & Inject Metadata ke MOV (Pakai path ffmpeg_exe)
         subprocess.run([
-            'ffmpeg', '-i', input_path,
+            ffmpeg_exe, '-i', input_path,
             '-metadata', f'com.apple.quicktime.content.identifier={asset_id}',
             '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
             '-y', output_mov
         ], check=True)
 
-        # 4. Kirim sebagai Dokumen (agar metadata tidak hilang)
-        await update.message.reply_document(document=open(output_jpg, 'rb'), caption="1. Simpan Gambar ke Photos")
-        await update.message.reply_document(document=open(output_mov, 'rb'), caption="2. Simpan Video ke Photos\n\nSetelah keduanya disimpan, iOS akan otomatis menggabungkannya.")
+        # 7. Kirim sebagai Dokumen (agar metadata tidak hilang)
+        with open(output_jpg, 'rb') as img, open(output_mov, 'rb') as vid:
+            await update.message.reply_document(document=img, filename=f"LivePhoto_{asset_id[:8]}.jpg", caption="1. Simpan Gambar ke Photos")
+            await update.message.reply_document(document=vid, filename=f"LivePhoto_{asset_id[:8]}.mov", caption="2. Simpan Video ke Photos\n\nSetelah keduanya disimpan, iOS akan otomatis menggabungkannya.")
 
+    except subprocess.CalledProcessError as e:
+        await update.message.reply_text(f"❌ Gagal memproses metadata (System Error).")
+        print(f"Subprocess Error: {e}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
     
     finally:
-        # Hapus file sampah
+        # 8. Hapus file sampah agar disk server nggak penuh
         for f in [input_path, output_jpg, output_mov]:
             if os.path.exists(f):
                 os.remove(f)
-        await status_msg.delete()
+        try:
+            await status_msg.delete()
+        except:
+            pass
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
