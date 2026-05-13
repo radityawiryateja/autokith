@@ -39,7 +39,7 @@ TITLE_PRICE = 500 # Harga Custom Title
 # === KONFIGURASI LIVE PHOTO ===
 # Wajib ada file template JPG dari Live Photo asli iPhone di root project.
 # File ini dipakai untuk membawa Apple MakerNote, karena ExifTool tidak bisa membuat MakerNote Apple dari nol di Linux/Heroku.
-LIVE_TEMPLATE_JPG = os.environ.get("LIVE_TEMPLATE_JPG", "live_template.jpg")
+LIVE_TEMPLATE_IMAGE = os.environ.get("LIVE_TEMPLATE_IMAGE", "live_template.heic")
 LIVE_MAX_DURATION = float(os.environ.get("LIVE_MAX_DURATION", "3.0"))
 LIVE_MAX_FILE_SIZE_MB = int(os.environ.get("LIVE_MAX_FILE_SIZE_MB", "45"))
 
@@ -1202,7 +1202,7 @@ async def _prepare_live_photo_still(ffmpeg_exe, exif_exe, input_path, output_jpg
     )
 
     if not old_asset_id:
-        raise RuntimeError("Template JPG tidak punya Apple ContentIdentifier. Pakai still image dari Live Photo iPhone asli sebagai live_template.jpg.")
+        raise RuntimeError("Template JPG tidak punya Apple ContentIdentifier. Pakai still image dari Live Photo iPhone asli sebagai live_template.heic.")
 
     # Coba bikin ID unik per request dengan mengganti UUID yang ada di MakerNote.
     replaced = await asyncio.to_thread(_replace_uuid_bytes, output_jpg, old_asset_id, desired_asset_id)
@@ -1285,7 +1285,7 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     ffmpeg_exe = shutil.which("ffmpeg")
     exif_exe = shutil.which("exiftool")
-    template_jpg = LIVE_TEMPLATE_JPG
+    template_jpg = LIVE_TEMPLATE_IMAGE
 
     if not ffmpeg_exe or not exif_exe:
         await msg.reply_text(
