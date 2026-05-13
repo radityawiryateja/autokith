@@ -12,7 +12,7 @@ import asyncio
 import httpx
 
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, CallbackContext
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity
 from supabase import create_client
 
 # Tarik data dari Environment Variables (Heroku)
@@ -22,7 +22,6 @@ try:
     GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', 0))
     ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', 0))
     LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', 0))
-    
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
     SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 except Exception as e:
@@ -84,7 +83,6 @@ async def update_banned_users_cache():
 async def check_system_tools():
     if not shutil.which("ffmpeg"): logger.warning("⚠️ FFmpeg TIDAK ditemukan! Fitur /live bakal error.")
 
-# PERBAIKAN: Fungsi ini sekarang dipanggil via post_init, bukan JobQueue
 async def on_startup(application: Application):
     try:
         me = await application.bot.get_me()
@@ -122,6 +120,15 @@ async def save_user(user_id, username):
         supabase.table("users").upsert({"user_id": user_id, "username": username}, on_conflict=["user_id"]).execute()
     except Exception: pass
 
+async def get_all_users():
+    """Mengambil semua ID user untuk keperluan broadcast"""
+    try:
+        res = supabase.table("users").select("user_id").execute()
+        return [row["user_id"] for row in res.data] if res.data else []
+    except Exception as e:
+        logger.error(f"Gagal memuat user: {e}")
+        return []
+
 # === FITUR KEYBOARD & MENU BAWAH ===
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     keyboard = [
@@ -157,6 +164,98 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await send_main_menu(update, context, "👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:")
 
+# === FITUR BROADCAST (DENGAN PROGRESS BAR) ===
+async def broadcast_text(update: Update, context: CallbackContext):
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: 
+        return await update.message.reply_text("⚠️ Format salah!\nGunakan: `/broadcast <Pesan kamu>`", parse_mode="Markdown")
+    
+    pesan = update.message.text.split(maxsplit=1)[1]
+    users = await get_all_users()
+    
+    if not users: 
+        return await update.message.reply_text("❌ Data user kosong di database.")
+    
+    total_users = len(users)
+    berhasil, gagal = 0, 0
+    status_msg = await update.message.reply_text(f"⏳ Memulai proses broadcast teks ke *{total_users}* users...\nMohon tunggu, proses ini akan memakan waktu.", parse_mode="Markdown")
+    
+    for i, target_id in enumerate(users):
+        try:
+            await context.bot.send_message(chat_id=target_id, text=pesan, parse_mode="Markdown")
+            berhasil += 1
+        except Exception:
+            gagal += 1
+        
+        # Update progress setiap 20 pesan atau ketika sudah mencapai user terakhir
+        if (i + 1) % 20 == 0 or (i + 1) == total_users:
+            try:
+                await status_msg.edit_text(
+                    f"⏳ *PROSES BROADCAST TEXT...*\n\n"
+                    f"📈 Progress: {i+1} / {total_users}\n"
+                    f"✅ Berhasil terkirim: {berhasil}\n"
+                    f"❌ Gagal/Blokir Bot: {gagal}", 
+                    parse_mode="Markdown"
+                )
+            except Exception: pass
+            await asyncio.sleep(0.2) # Memberi jeda agar tidak di-limit Telegram
+            
+    await status_msg.edit_text(
+        f"✅ *BROADCAST SELESAI!*\n\n"
+        f"👥 Total Target: {total_users}\n"
+        f"✅ Sukses Terkirim: {berhasil}\n"
+        f"❌ Gagal Terkirim: {gagal}\n\n"
+        f"_(Gagal biasanya karena user telah memblokir/delete bot dari akunnya)_", 
+        parse_mode="Markdown"
+    )
+
+async def broadcast_forward(update: Update, context: CallbackContext):
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: 
+        return await update.message.reply_text("⚠️ Format salah!\nGunakan: `/broadcastfw <Link Publik Postingan Channel>`", parse_mode="Markdown")
+    
+    link = context.args[0]
+    match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
+    if not match: 
+        return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya `t.me/username_channel/angka`", parse_mode="Markdown")
+    
+    channel_username, message_id = match.groups()
+    if channel_username.lower() == "c": 
+        return await update.message.reply_text("❌ Kamu memasukkan link dari channel Private. Bot tidak bisa mem-forward dari channel private/grup private!")
+    
+    users = await get_all_users()
+    if not users: return await update.message.reply_text("❌ Data user kosong di database.")
+    
+    total_users = len(users)
+    berhasil, gagal = 0, 0
+    status_msg = await update.message.reply_text(f"⏳ Memulai forward otomatis ke *{total_users}* users...\nMohon tunggu.", parse_mode="Markdown")
+    
+    for i, target_id in enumerate(users):
+        try:
+            await context.bot.forward_message(chat_id=target_id, from_chat_id=f"@{channel_username}", message_id=int(message_id))
+            berhasil += 1
+        except Exception:
+            gagal += 1
+            
+        if (i + 1) % 20 == 0 or (i + 1) == total_users:
+            try:
+                await status_msg.edit_text(
+                    f"⏳ *PROSES BROADCAST FORWARD...*\n\n"
+                    f"📈 Progress: {i+1} / {total_users}\n"
+                    f"✅ Berhasil terkirim: {berhasil}\n"
+                    f"❌ Gagal/Blokir Bot: {gagal}", 
+                    parse_mode="Markdown"
+                )
+            except Exception: pass
+            await asyncio.sleep(0.2)
+            
+    await status_msg.edit_text(
+        f"✅ *BROADCAST FORWARD SELESAI!*\n\n"
+        f"👥 Total Target: {total_users}\n"
+        f"✅ Sukses Terkirim: {berhasil}\n"
+        f"❌ Gagal Terkirim: {gagal}", 
+        parse_mode="Markdown"
+    )
 
 # === SISTEM LIVE PHOTO ===
 def _get_video_file_from_message(msg):
@@ -197,6 +296,8 @@ async def _send_live_photo_direct(bot_token, chat_id, video_path, photo_path, me
 
 async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    user_id = update.effective_user.id
+    
     video = _get_video_file_from_message(msg)
     if not video:
         return await msg.reply_text("Silakan kirim video terlebih dahulu.")
@@ -208,7 +309,21 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if file_size > (LIVE_MAX_INPUT_FILE_SIZE_MB * 1024 * 1024):
         return await msg.reply_text(f"❌ Video terlalu besar (Max {LIVE_MAX_INPUT_FILE_SIZE_MB}MB).")
 
-    status_msg = await msg.reply_text("⏳ Memproses Live Photo native Telegram...\nTahap 1/4: download video")
+    # --- CEK SALDO DAN POTONG 100 KOIN ---
+    try:
+        res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        current_balance = res.data[0].get("kith_coins") if res.data and res.data[0].get("kith_coins") is not None else 0
+
+        if current_balance < 100:
+            return await msg.reply_text(f"❌ Kith-Coins kamu tidak cukup untuk membuat Photo Live.\n\nBiaya: 100 Coins\nSaldo kamu: {current_balance} Coins")
+
+        new_balance = current_balance - 100
+        supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute()
+    except Exception:
+        return await msg.reply_text("❌ Terjadi kesalahan pada database saat mengecek saldo.")
+    # ---------------------------------------
+
+    status_msg = await msg.reply_text("⏳ Memproses Live Photo... *(Saldo dipotong 100 Coins)*\nTahap 1/4: download video", parse_mode="Markdown")
     asset_id = str(uuid.uuid4()).upper()
     input_path, output_live_photo, output_photo = f"in_{asset_id}.mp4", f"out_{asset_id}.mp4", f"pic_{asset_id}.jpg"
     
@@ -246,7 +361,10 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     except Exception as e:
         logger.exception("Gagal live photo via API")
-        await status_msg.edit_text(f"❌ Gagal memproses Live Photo:\n{e}")
+        # --- REFUND JIKA GAGAL ---
+        try: supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
+        except Exception: pass
+        await status_msg.edit_text(f"❌ Gagal memproses Live Photo:\n{e}\n\n*(Koin kamu telah dikembalikan / Refund 100 Coins)*", parse_mode="Markdown")
     finally:
         for p in [input_path, output_live_photo, output_photo]:
             if os.path.exists(p): os.remove(p)
@@ -306,7 +424,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
 
     elif pesan_teks == "📸 Photo live":
         context.user_data['state'] = 'WAITING_LIVE_VIDEO'
-        return await update.message.reply_text("📸 *Buat Photo Live*\n\nSip! Sekarang langsung kirim atau forward videonya ke sini (Maksimal 10 detik dan < 10MB).")
+        return await update.message.reply_text("📸 *Buat Photo Live*\nBiaya: **100 Kith-Coins**\n\nSip! Sekarang langsung kirim atau forward videonya ke sini (Maksimal 10 detik dan < 10MB).", parse_mode="Markdown")
 
     elif pesan_teks == "💌 Menfess":
         context.user_data['state'] = 'WAITING_MENFESS'
@@ -408,13 +526,29 @@ async def handle_pesan(update: Update, context: CallbackContext):
             logger.error(f"Error kirim manual review: {e}")
             await update.message.reply_text("❌ Gagal mengirim menfess ke admin review.")
 
-# === FUNGSI ADMIN & HANDLER PENDUKUNG (TETAP DIPERTAHANKAN) ===
-# Ini memastikan command admin dan logic callback inline kamu tetap berfungsi seperti semula
+# === FUNGSI ADMIN & HANDLER GRUP PENDUKUNG ===
+async def handle_discussion(update: Update, context: CallbackContext):
+    msg = update.effective_message
+    if not msg: return
+    
+    # Deteksi pesan masuk/forward otomatis channel di Grup Diskusi (Comsect)
+    if msg.is_automatic_forward:
+        post_id = msg.forward_from_message_id if hasattr(msg, 'forward_from_message_id') else None
+        if not post_id and getattr(msg, 'forward_origin', None):
+            post_id = getattr(msg.forward_origin, 'message_id', None)
+
+        if post_id in CACHE_COMSECT_OFF:
+            try:
+                await msg.delete()
+                CACHE_COMSECT_OFF.remove(post_id)
+            except Exception as e:
+                logger.error(f"Gagal hapus auto komen comsect: {e}")
+
 async def handle_callback_review(update: Update, context: CallbackContext):
-    pass # Logika admin review milikmu (TETAPKAN seperti original jika ada spesifik)
+    pass # Logika admin review milikmu (TETAPKAN seperti original)
 
 async def handle_admin_reply(update: Update, context: CallbackContext):
-    pass # Logika balasan admin milikmu (TETAPKAN)
+    pass # Logika balasan admin milikmu (TETAPKAN seperti original)
 
 async def set_mode_auto(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
@@ -434,23 +568,25 @@ async def set_mode_manual(update: Update, context: CallbackContext):
 
 # === MAIN PROCESS RUNNER ===
 def main():
-    # PERBAIKAN: post_init(on_startup) dipanggil di sini untuk menggantikan JobQueue
     application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
 
     # Commands Dasar
     application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('menu', cmd_menu)) # Alternatif untuk memunculkan menu bagi user lama
+    application.add_handler(CommandHandler('menu', cmd_menu))
     application.add_handler(CommandHandler('live', live_photo_handler))
     
-    # Mode Settings
+    # Command Admin: Mode & Broadcast (DENGAN PROGRESS BAR)
     application.add_handler(CommandHandler('auto', set_mode_auto))
     application.add_handler(CommandHandler('manual', set_mode_manual))
+    application.add_handler(CommandHandler('broadcast', broadcast_text))
+    application.add_handler(CommandHandler('broadcastfw', broadcast_forward))
     
-    # Menangkap SEMUA input teks dan media dari private chat (Otak State Machine)
+    # Handler Otak State Machine (Menangkap Ketukan Keyboard Bawah)
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_pesan))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.TEXT, handle_pesan))
 
-    # Handlers callback & admin jika ada
+    # Handler Grup (Admin & Diskusi Comsect Auto Delete)
+    application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
     application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
 
