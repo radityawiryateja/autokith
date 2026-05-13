@@ -1208,172 +1208,108 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
     )
 
-def _get_video_file_from_message(message):
-    """Ambil objek video Telegram dari pesan langsung atau pesan yang di-reply."""
-    if not message:
+# === SISTEM LIVE PHOTO ===
+def _get_video_file_from_message(msg):
+    """Ambil video dari pesan langsung, dokumen video, animation/GIF, atau pesan yang di-reply."""
+    if not msg:
         return None
 
-    if message.video:
-        return message.video
+    for attr in ("video", "document", "animation"):
+        obj = getattr(msg, attr, None)
+        if not obj:
+            continue
+        if attr == "document":
+            mime_type = getattr(obj, "mime_type", "") or ""
+            if not mime_type.startswith("video/"):
+                continue
+        return obj
 
-    if message.animation:
-        return message.animation
-
-    if message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
-        return message.document
-
-    if message.reply_to_message:
-        replied = message.reply_to_message
-        if replied.video:
-            return replied.video
-        if replied.animation:
-            return replied.animation
-        if replied.document and replied.document.mime_type and replied.document.mime_type.startswith("video/"):
-            return replied.document
+    if getattr(msg, "reply_to_message", None):
+        return _get_video_file_from_message(msg.reply_to_message)
 
     return None
 
 
-async def _run_cmd(cmd, timeout=180):
-    """Jalankan command berat di thread supaya polling bot tidak nge-freeze."""
-    def _runner():
-        return subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout
-        )
-
-    result = await asyncio.to_thread(_runner)
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip()
-        detail = stderr or stdout or "Unknown subprocess error"
-        raise RuntimeError(detail[-1800:])
-    return result
-
-
-def _file_size_mb(path):
-    if not os.path.exists(path):
-        return 0.0
-    return os.path.getsize(path) / (1024 * 1024)
-
-
-async def _encode_video_for_native_live_photo(ffmpeg_exe, input_path, output_video):
-    """Buat video MP4 <= 10 detik dan <= 10 MB untuk parameter live_photo."""
-    max_bytes = LIVE_MAX_OUTPUT_FILE_SIZE_MB * 1024 * 1024
-
-    # Beberapa tingkat kompresi. Normalnya attempt pertama sudah jauh di bawah 10 MB.
-    attempts = [
-        {"width": 720, "video_bitrate": "3500k", "maxrate": "4200k", "bufsize": "8400k", "audio_bitrate": "96k"},
-        {"width": 540, "video_bitrate": "2200k", "maxrate": "2600k", "bufsize": "5200k", "audio_bitrate": "80k"},
-        {"width": 480, "video_bitrate": "1400k", "maxrate": "1700k", "bufsize": "3400k", "audio_bitrate": "64k"},
-    ]
-
-    last_detail = ""
-    for attempt in attempts:
+async def _run_cmd(cmd, timeout=120):
+    """Jalankan command async supaya bot tidak freeze saat FFmpeg memproses video."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
         try:
-            if os.path.exists(output_video):
-                os.remove(output_video)
+            await proc.wait()
+        except Exception:
+            pass
+        raise RuntimeError(f"Command timed out after {timeout} seconds.")
 
-            vf = f"scale={attempt['width']}:-2:force_original_aspect_ratio=decrease,setsar=1,fps=30"
-            await _run_cmd([
-                ffmpeg_exe,
-                "-hide_banner", "-loglevel", "error",
-                "-i", input_path,
-                "-t", str(LIVE_MAX_DURATION),
-                "-map", "0:v:0",
-                "-map", "0:a?",
-                "-vf", vf,
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-b:v", attempt["video_bitrate"],
-                "-maxrate", attempt["maxrate"],
-                "-bufsize", attempt["bufsize"],
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", attempt["audio_bitrate"],
-                "-movflags", "+faststart",
-                "-y", output_video
-            ], timeout=240)
+    if proc.returncode != 0:
+        detail = (stderr or stdout or b"").decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(f"Command failed:\n{detail[-1800:]}")
 
-            if not os.path.exists(output_video) or os.path.getsize(output_video) == 0:
-                last_detail = "FFmpeg tidak menghasilkan file video."
-                continue
-
-            size = os.path.getsize(output_video)
-            if size <= max_bytes:
-                return size
-
-            last_detail = f"hasil {size / (1024 * 1024):.2f} MB masih melebihi batas {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB"
-        except RuntimeError as e:
-            last_detail = str(e)
-
-    raise RuntimeError(f"Gagal membuat video live_photo <= {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB. Detail terakhir: {last_detail}")
+    return stdout, stderr
 
 
-async def _extract_static_photo_for_native_live_photo(ffmpeg_exe, video_path, output_photo):
-    """Buat static photo JPEG untuk parameter photo di sendLivePhoto."""
-    if os.path.exists(output_photo):
-        os.remove(output_photo)
-
-    await _run_cmd([
-        ffmpeg_exe,
-        "-hide_banner", "-loglevel", "error",
-        "-ss", "0.2",
-        "-i", video_path,
-        "-frames:v", "1",
-        "-q:v", "2",
-        "-y", output_photo
-    ], timeout=120)
-
-    if not os.path.exists(output_photo) or os.path.getsize(output_photo) == 0:
-        raise RuntimeError("Gagal membuat static photo JPEG untuk sendLivePhoto.")
-
-    # Bot API membatasi photo 10 MB. Frame dari video 720p biasanya jauh di bawah ini.
-    if os.path.getsize(output_photo) > 10 * 1024 * 1024:
-        raise RuntimeError(f"Static photo terlalu besar: {_file_size_mb(output_photo):.2f} MB.")
+async def _safe_edit_text(message, text, **kwargs):
+    """Edit pesan status tanpa membuat proses utama gagal kalau Telegram menolak edit."""
+    if not message:
+        return None
+    try:
+        return await message.edit_text(text, **kwargs)
+    except Exception as e:
+        logger.warning(f"Gagal edit pesan status Live Photo, proses tetap dilanjutkan: {e}")
+        return None
 
 
-async def _send_native_live_photo(context, chat_id, live_photo_path, photo_path, caption, reply_to_message_id=None, message_thread_id=None):
-    """Panggil Bot API sendLivePhoto langsung karena library python-telegram-bot bisa jadi belum support method baru."""
-    token = BOT_TOKEN or getattr(context.bot, "token", None)
-    if not token:
+async def _safe_delete_message(message):
+    """Hapus pesan status tanpa membuat proses utama gagal."""
+    if not message:
+        return None
+    try:
+        return await message.delete()
+    except Exception:
+        return None
+
+
+async def _send_live_photo_direct(bot_token, chat_id, video_path, photo_path, message_thread_id=None, reply_to_message_id=None):
+    """Kirim native Live Photo langsung ke Bot API karena versi PTB tertentu belum punya method sendLivePhoto."""
+    if not bot_token:
         raise RuntimeError("BOT_TOKEN belum tersedia di environment variables.")
 
-    url = f"{TELEGRAM_API_BASE.rstrip('/')}/bot{token}/sendLivePhoto"
-    data = {
-        "chat_id": str(chat_id),
-        "caption": caption,
-    }
+    url = f"{TELEGRAM_API_BASE.rstrip('/')}/bot{bot_token}/sendLivePhoto"
+    data = {"chat_id": str(chat_id)}
 
     if message_thread_id:
         data["message_thread_id"] = str(message_thread_id)
 
     if reply_to_message_id:
+        # reply_parameters lebih aman daripada reply_to_message_id lama karena bisa allow_sending_without_reply.
         data["reply_parameters"] = json.dumps({
             "message_id": reply_to_message_id,
-            "allow_sending_without_reply": True
+            "allow_sending_without_reply": True,
         })
 
     timeout = httpx.Timeout(180.0, connect=30.0, read=180.0, write=180.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        with open(live_photo_path, "rb") as live_file, open(photo_path, "rb") as photo_file:
+        with open(video_path, "rb") as vf, open(photo_path, "rb") as pf:
             files = {
-                "live_photo": ("live_photo.mp4", live_file, "video/mp4"),
-                "photo": ("photo.jpg", photo_file, "image/jpeg"),
+                "live_photo": ("live_photo.mp4", vf, "video/mp4"),
+                "photo": ("photo.jpg", pf, "image/jpeg"),
             }
-            response = await client.post(url, data=data, files=files)
+            resp = await client.post(url, data=data, files=files)
 
     try:
-        payload = response.json()
+        payload = resp.json()
     except ValueError:
-        raise RuntimeError(f"Telegram API tidak mengembalikan JSON. HTTP {response.status_code}: {response.text[:1000]}")
+        raise RuntimeError(f"Telegram API tidak mengembalikan JSON. HTTP {resp.status_code}: {resp.text[:1000]}")
 
-    if response.status_code >= 400 or not payload.get("ok"):
-        description = payload.get("description") or response.text[:1000]
-        error_code = payload.get("error_code", response.status_code)
+    if resp.status_code >= 400 or not payload.get("ok"):
+        description = payload.get("description") or resp.text[:1000]
+        error_code = payload.get("error_code", resp.status_code)
         raise RuntimeError(f"Telegram sendLivePhoto gagal ({error_code}): {description}")
 
     return payload.get("result")
@@ -1385,132 +1321,162 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     video = _get_video_file_from_message(msg)
 
     if not video:
-        await msg.reply_text(
-            "Silakan kirim video dengan caption /live, atau reply/balas video dengan /live.\n"
-            "Bisa juga kirim video sebagai file dokumen.",
-            reply_markup=get_main_keyboard()
+        return await msg.reply_text(
+            "Silakan kirim video terlebih dahulu.",
+            reply_markup=get_main_keyboard(),
         )
-        return
 
     ffmpeg_exe = shutil.which("ffmpeg")
     if not ffmpeg_exe:
-        await msg.reply_text(
-            "❌ FFmpeg belum kebaca di server.\n"
-            "Pastikan Aptfile berisi `ffmpeg`, lalu deploy ulang.",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
+        return await msg.reply_text(
+            "❌ FFmpeg belum kebaca di server.",
+            reply_markup=get_main_keyboard(),
         )
-        return
 
     file_size = getattr(video, "file_size", 0) or 0
-    max_input_bytes = LIVE_MAX_INPUT_FILE_SIZE_MB * 1024 * 1024
-    if file_size and file_size > max_input_bytes:
-        await msg.reply_text(
-            f"❌ Videonya terlalu besar untuk diproses di Heroku. Maksimal input {LIVE_MAX_INPUT_FILE_SIZE_MB} MB.",
-            reply_markup=get_main_keyboard()
+    if file_size > (LIVE_MAX_INPUT_FILE_SIZE_MB * 1024 * 1024):
+        return await msg.reply_text(
+            f"❌ Video terlalu besar (Max {LIVE_MAX_INPUT_FILE_SIZE_MB}MB).",
+            reply_markup=get_main_keyboard(),
         )
-        return
 
-    current_balance = None
+    current_balance = 0
     charged = False
-    if LIVE_PHOTO_PRICE > 0:
-        try:
-            res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
-            current_balance = res.data[0].get("kith_coins") if hasattr(res, 'data') and res.data and res.data[0].get("kith_coins") is not None else 0
-            if current_balance < LIVE_PHOTO_PRICE:
-                await msg.reply_text(
-                    f"❌ Kith-Coins kurang (Biaya: {LIVE_PHOTO_PRICE} Coins). Saldo: {current_balance}",
-                    reply_markup=get_main_keyboard()
-                )
-                return
+    try:
+        res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
+        current_balance = res.data[0].get("kith_coins") if res.data and res.data[0].get("kith_coins") is not None else 0
+
+        if LIVE_PHOTO_PRICE > 0 and current_balance < LIVE_PHOTO_PRICE:
+            return await msg.reply_text(
+                f"❌ Kith-Coins kurang (Biaya: {LIVE_PHOTO_PRICE} Coins). Saldo: {current_balance}",
+                reply_markup=get_main_keyboard(),
+            )
+
+        if LIVE_PHOTO_PRICE > 0:
             supabase.table("users").update({"kith_coins": current_balance - LIVE_PHOTO_PRICE}).eq("user_id", user_id).execute()
             charged = True
-        except Exception as e:
-            logger.error(f"Gagal mengecek/memotong koin Live Photo: {e}")
-            await msg.reply_text("❌ Gagal mengecek saldo.", reply_markup=get_main_keyboard())
-            return
+    except Exception as e:
+        logger.error(f"Gagal mengecek/memotong saldo Live Photo: {e}")
+        return await msg.reply_text("❌ Gagal mengecek saldo.", reply_markup=get_main_keyboard())
 
-    original_duration = getattr(video, "duration", None)
-    duration_note = ""
-    if original_duration and original_duration > LIVE_MAX_DURATION:
-        duration_note = f"\nCatatan: video dipotong jadi {LIVE_MAX_DURATION:.0f} detik agar sesuai batas Telegram."
-
-    price_note = f"\nBiaya: {LIVE_PHOTO_PRICE} Kith-Coins." if LIVE_PHOTO_PRICE > 0 else ""
+    charge_text = f" *(Saldo dipotong {LIVE_PHOTO_PRICE} Coins)*" if LIVE_PHOTO_PRICE > 0 else ""
     status_msg = await msg.reply_text(
-        f"⏳ Memproses Live Photo native Telegram...{price_note}\nTahap 1/4: download video",
-        reply_markup=get_main_keyboard()
+        f"⏳ Memproses Live Photo...{charge_text}\nTahap 1/4: download video",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(),
     )
 
     asset_id = str(uuid.uuid4()).upper()
-    input_path = f"input_{asset_id}.mp4"
-    output_live_photo = f"live_photo_{asset_id}.mp4"
-    output_photo = f"photo_{asset_id}.jpg"
+    input_path = f"in_{asset_id}.mp4"
+    output_live_photo = f"out_{asset_id}.mp4"
+    output_photo = f"pic_{asset_id}.jpg"
 
     try:
         telegram_file = await video.get_file()
         await telegram_file.download_to_drive(input_path)
 
-        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 2/4: compress video <= 10 detik & <= 10 MB")
-        output_size = await _encode_video_for_native_live_photo(ffmpeg_exe, input_path, output_live_photo)
+        await _safe_edit_text(status_msg, "⏳ Tahap 2/4: convert ke format Live Photo")
 
-        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 3/4: buat static photo")
-        await _extract_static_photo_for_native_live_photo(ffmpeg_exe, output_live_photo, output_photo)
+        max_output_bytes = LIVE_MAX_OUTPUT_FILE_SIZE_MB * 1024 * 1024
+        attempts = [
+            {"width": 720, "vb": "3500k", "mr": "4200k", "bs": "8400k", "ab": "96k"},
+            {"width": 540, "vb": "2200k", "mr": "2600k", "bs": "5200k", "ab": "80k"},
+            {"width": 480, "vb": "1400k", "mr": "1700k", "bs": "3400k", "ab": "64k"},
+        ]
+        last_error = ""
+        encoded_ok = False
 
-        await status_msg.edit_text("⏳ Memproses Live Photo native Telegram...\nTahap 4/4: kirim via sendLivePhoto")
-        caption = (
-            "✅ Live Photo berhasil dibuat."
-            f"\nDurasi maksimal: {LIVE_MAX_DURATION:.0f} detik."
-            f"\nUkuran video: {output_size / (1024 * 1024):.2f} MB."
-            f"{price_note}"
-            f"{duration_note}"
-        )
-
-        await _send_native_live_photo(
-            context=context,
-            chat_id=msg.chat_id,
-            live_photo_path=output_live_photo,
-            photo_path=output_photo,
-            caption=caption,
-            reply_to_message_id=msg.message_id,
-            message_thread_id=getattr(msg, "message_thread_id", None)
-        )
-
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
-
-    except RuntimeError as e:
-        logger.error(f"Native Live Photo Runtime Error: {e}")
-        refund_note = ""
-        if charged and current_balance is not None:
+        for attempt in attempts:
             try:
-                supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
-                refund_note = f"\n\nKoin kamu telah di-Refund {LIVE_PHOTO_PRICE} Coins."
-            except Exception as refund_err:
-                logger.error(f"Gagal refund Live Photo untuk {user_id}: {refund_err}")
-        await msg.reply_text(f"❌ Gagal kirim Live Photo native.\n\nDetail:\n{str(e)[:1500]}{refund_note}", reply_markup=get_main_keyboard())
+                if os.path.exists(output_live_photo):
+                    os.remove(output_live_photo)
+
+                vf = f"scale={attempt['width']}:-2:force_original_aspect_ratio=decrease,setsar=1,fps=30"
+                await _run_cmd([
+                    ffmpeg_exe,
+                    "-hide_banner", "-loglevel", "error",
+                    "-i", input_path,
+                    "-t", str(LIVE_MAX_DURATION),
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-vf", vf,
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-b:v", attempt["vb"],
+                    "-maxrate", attempt["mr"],
+                    "-bufsize", attempt["bs"],
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-b:a", attempt["ab"],
+                    "-movflags", "+faststart",
+                    "-y", output_live_photo,
+                ], timeout=240)
+
+                if not os.path.exists(output_live_photo) or os.path.getsize(output_live_photo) == 0:
+                    last_error = "FFmpeg tidak menghasilkan file video."
+                    continue
+
+                output_size = os.path.getsize(output_live_photo)
+                if output_size <= max_output_bytes:
+                    encoded_ok = True
+                    break
+
+                last_error = f"hasil masih {output_size / (1024 * 1024):.2f} MB, melebihi batas {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB"
+            except Exception as e:
+                last_error = str(e)
+
+        if not encoded_ok:
+            raise RuntimeError(f"Gagal membuat video Live Photo <= {LIVE_MAX_OUTPUT_FILE_SIZE_MB} MB. {last_error}")
+
+        await _safe_edit_text(status_msg, "⏳ Tahap 3/4: extract static photo")
+        await _run_cmd([
+            ffmpeg_exe,
+            "-hide_banner", "-loglevel", "error",
+            "-ss", "0.2",
+            "-i", output_live_photo,
+            "-vframes", "1",
+            "-q:v", "2",
+            "-y", output_photo,
+        ], timeout=120)
+
+        if not os.path.exists(output_photo) or os.path.getsize(output_photo) == 0:
+            raise RuntimeError("Gagal membuat static photo untuk Live Photo.")
+
+        await _safe_edit_text(status_msg, "⏳ Tahap 4/4: upload Live Photo")
+        await _send_live_photo_direct(
+            BOT_TOKEN,
+            msg.chat_id,
+            output_live_photo,
+            output_photo,
+            getattr(msg, "message_thread_id", None),
+            msg.message_id,
+        )
+
+        await _safe_delete_message(status_msg)
+
     except Exception as e:
-        logger.exception("Native Live Photo unexpected error")
+        logger.exception("Gagal live photo")
         refund_note = ""
-        if charged and current_balance is not None:
+        if charged:
             try:
                 supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
                 refund_note = f"\n\nKoin kamu telah di-Refund {LIVE_PHOTO_PRICE} Coins."
             except Exception as refund_err:
                 logger.error(f"Gagal refund Live Photo untuk {user_id}: {refund_err}")
-        await msg.reply_text(f"❌ Error tidak terduga:\n{str(e)[:1500]}{refund_note}", reply_markup=get_main_keyboard())
+
+        # Jangan edit status_msg di sini, karena error yang kamu alami justru dari edit pesan.
+        await msg.reply_text(
+            f"❌ Gagal memproses Live Photo:\n{str(e)[:1500]}{refund_note}",
+            reply_markup=get_main_keyboard(),
+        )
     finally:
-        for f in [input_path, output_live_photo, output_photo]:
+        for p in [input_path, output_live_photo, output_photo]:
             try:
-                if os.path.exists(f):
-                    os.remove(f)
+                if os.path.exists(p):
+                    os.remove(p)
             except Exception:
                 pass
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+        await _safe_delete_message(status_msg)
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
