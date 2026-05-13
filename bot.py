@@ -684,7 +684,7 @@ def main():
     application.add_handler(CommandHandler('listbadwords', list_badwords))
     application.add_handler(CommandHandler('block', block_user))
     application.add_handler(CommandHandler('unblock', unblock_user))
-    application.add_handler(CommandHandler('setrequired', set_required_channels))
+    application.add_handler(CommandHandler('setrequired', required_channels))
     application.add_handler(CommandHandler('addcommand', add_command_admin))
     application.add_handler(CommandHandler('deletecommand', delete_command_admin))
     application.add_handler(CommandHandler('grupid', get_group_id))
