@@ -128,13 +128,15 @@ async def get_all_users():
         return []
 
 # === FITUR KEYBOARD & MENU BAWAH ===
-async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+def get_main_keyboard():
     keyboard = [
         [KeyboardButton("💬 Beli title"), KeyboardButton("💌 Menfess")],
         [KeyboardButton("👤 Profile"), KeyboardButton("📸 Photo live")]
     ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+def get_cancel_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("❌ Cancel")]], resize_keyboard=True, is_persistent=True)
 
 async def start(update: Update, context: CallbackContext):
     if update.effective_chat.type != "private": return
@@ -152,14 +154,14 @@ async def start(update: Update, context: CallbackContext):
             "𔐼 *Ch Arsip:* [@kithives](https://t.me/kithives)\n\n"
             "Silakan gunakan tombol menu di bawah untuk bernavigasi!"
         )
-        await send_main_menu(update, context, text)
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
     else:
         inline_kb = [[InlineKeyboardButton("Join Channels", url=f"https://t.me/{c[1:]}")] for c in required_channels]
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(inline_kb) if inline_kb else None)
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        await send_main_menu(update, context, "👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:")
+        await update.message.reply_text("👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 # === FITUR LEADERBOARD ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -293,7 +295,6 @@ async def set_required_channels(update: Update, context: CallbackContext):
         for channel in required_channels: supabase.table('required_channels').insert({"channel_username": channel}).execute()
     except Exception: pass
     await update.message.reply_text(f"✅ Daftar channel wajib diupdate: {', '.join(required_channels)}")
-
 
 # === FITUR GAME: UNDERCOVER ===
 async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,22 +470,23 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     
     video = _get_video_file_from_message(msg)
-    if not video: return await msg.reply_text("Silakan kirim video terlebih dahulu.")
-    if not shutil.which("ffmpeg"): return await msg.reply_text("❌ FFmpeg belum kebaca di server.")
+    if not video: return await msg.reply_text("Silakan kirim video terlebih dahulu.", reply_markup=get_main_keyboard())
+    if not shutil.which("ffmpeg"): return await msg.reply_text("❌ FFmpeg belum kebaca di server.", reply_markup=get_main_keyboard())
 
     file_size = getattr(video, "file_size", 0) or 0
     if file_size > (LIVE_MAX_INPUT_FILE_SIZE_MB * 1024 * 1024):
-        return await msg.reply_text(f"❌ Video terlalu besar (Max {LIVE_MAX_INPUT_FILE_SIZE_MB}MB).")
+        return await msg.reply_text(f"❌ Video terlalu besar (Max {LIVE_MAX_INPUT_FILE_SIZE_MB}MB).", reply_markup=get_main_keyboard())
 
     # Cek Saldo & Potong 100 Koin
     try:
         res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
         current_balance = res.data[0].get("kith_coins", 0) if res.data else 0
-        if current_balance < 100: return await msg.reply_text(f"❌ Kith-Coins kurang (Biaya: 100 Coins). Saldo: {current_balance}")
+        if current_balance < 100: return await msg.reply_text(f"❌ Kith-Coins kurang (Biaya: 100 Coins). Saldo: {current_balance}", reply_markup=get_main_keyboard())
         supabase.table("users").update({"kith_coins": current_balance - 100}).eq("user_id", user_id).execute()
-    except Exception: return await msg.reply_text("❌ Terjadi kesalahan pada database saat mengecek saldo.")
+    except Exception: return await msg.reply_text("❌ Terjadi kesalahan pada database saat mengecek saldo.", reply_markup=get_main_keyboard())
 
-    status_msg = await msg.reply_text("⏳ Memproses Live Photo... *(Saldo dipotong 100 Coins)*\nTahap 1/4: download video", parse_mode="Markdown")
+    # Balikin Keyboard Utama pas mulai proses
+    status_msg = await msg.reply_text("⏳ Memproses Live Photo... *(Saldo dipotong 100 Coins)*\nTahap 1/4: download video", parse_mode="Markdown", reply_markup=get_main_keyboard())
     asset_id = str(uuid.uuid4()).upper()
     input_path, output_live_photo, output_photo = f"in_{asset_id}.mp4", f"out_{asset_id}.mp4", f"pic_{asset_id}.jpg"
     
@@ -560,7 +562,11 @@ async def handle_pesan(update: Update, context: CallbackContext):
     pesan_teks = update.message.text or update.message.caption or ""
     state = context.user_data.get('state')
 
-    # FASE 1: TANGKAP TOMBOL
+    # FASE 1: TANGKAP TOMBOL (Termasuk Cancel)
+    if pesan_teks == "❌ Cancel":
+        context.user_data['state'] = None
+        return await update.message.reply_text("✅ Aksi dibatalkan. Kembali ke menu utama.", reply_markup=get_main_keyboard())
+
     if pesan_teks == "👤 Profile":
         context.user_data['state'] = None
         try:
@@ -568,60 +574,60 @@ async def handle_pesan(update: Update, context: CallbackContext):
             row = res.data[0] if res.data else {}
             coins = row.get("kith_coins", 0) or 0
             total_coins = row.get("total_kith_coins", coins) or coins
-            return await update.message.reply_text(f"👤 *PROFIL KAMU*\n\n🆔 ID: `{user_id}`\n🏷️ Username: @{username or first_name}\n🪙 Saldo Kith-Coins: *{coins}*\n🏆 Total Koin Diperoleh: *{total_coins}*", parse_mode="Markdown")
+            return await update.message.reply_text(f"👤 *PROFIL KAMU*\n\n🆔 ID: `{user_id}`\n🏷️ Username: @{username or first_name}\n🪙 Saldo Kith-Coins: *{coins}*\n🏆 Total Koin Diperoleh: *{total_coins}*", parse_mode="Markdown", reply_markup=get_main_keyboard())
         except Exception: return await update.message.reply_text("❌ Gagal mengambil profil.")
 
     elif pesan_teks == "💬 Beli title":
         context.user_data['state'] = 'WAITING_TITLE'
-        return await update.message.reply_text(f"🛒 *Beli Custom Title*\nHarga: **{TITLE_PRICE} Kith-Coins**.\n\nKetik **Nama Title Barumu** (Maks 16 karakter):", parse_mode="Markdown")
+        return await update.message.reply_text(f"🛒 *Beli Custom Title*\nHarga: **{TITLE_PRICE} Kith-Coins**.\n\nKetik **Nama Title Barumu** (Maks 16 karakter):", parse_mode="Markdown", reply_markup=get_cancel_keyboard())
 
     elif pesan_teks == "📸 Photo live":
         context.user_data['state'] = 'WAITING_LIVE_VIDEO'
-        return await update.message.reply_text("📸 *Buat Photo Live*\nBiaya: **100 Kith-Coins**\n\nKirim/forward videonya ke sini (Maks 10 detik, < 10MB).", parse_mode="Markdown")
+        return await update.message.reply_text("📸 *Buat Photo Live*\nBiaya: **100 Kith-Coins**\n\nKirim/forward videonya ke sini (Maks 10 detik, < 10MB).", parse_mode="Markdown", reply_markup=get_cancel_keyboard())
 
     elif pesan_teks == "💌 Menfess":
         context.user_data['state'] = 'WAITING_MENFESS'
-        return await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown")
+        return await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
     # FASE 2: PROSES STATE
     if state == 'WAITING_TITLE':
         context.user_data['state'] = None 
-        if len(pesan_teks) > 16: return await update.message.reply_text("❌ Nama title maksimal 16 karakter.")
+        if len(pesan_teks) > 16: return await update.message.reply_text("❌ Nama title maksimal 16 karakter. Silakan coba lagi.", reply_markup=get_main_keyboard())
         
         try:
             res = supabase.table("users").select("kith_coins").eq("user_id", user_id).execute()
             current_balance = res.data[0].get("kith_coins", 0) if res.data else 0
 
-            if current_balance < TITLE_PRICE: return await update.message.reply_text(f"❌ Kith-Coins kurang. Saldo: {current_balance}")
+            if current_balance < TITLE_PRICE: return await update.message.reply_text(f"❌ Kith-Coins kurang. Saldo: {current_balance}", reply_markup=get_main_keyboard())
             supabase.table("users").update({"kith_coins": current_balance - TITLE_PRICE}).eq("user_id", user_id).execute()
 
             try:
                 await context.bot.set_chat_member_tag(chat_id=GROUP_ID_DISKUSI, user_id=user_id, tag=pesan_teks)
-                await update.message.reply_text(f"✅ Berhasil!\n🏷️ Title: `{pesan_teks}`\n🪙 Sisa Kith-Coins: {current_balance - TITLE_PRICE}", parse_mode="Markdown")
+                await update.message.reply_text(f"✅ Berhasil!\n🏷️ Title: `{pesan_teks}`\n🪙 Sisa Kith-Coins: {current_balance - TITLE_PRICE}", parse_mode="Markdown", reply_markup=get_main_keyboard())
             except Exception as e:
                 supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute()
                 if "User_Not_Participant" in str(e) or "not a member" in str(e):
                     keyboard = [[InlineKeyboardButton("Masuk Comsect", url="https://t.me/kitheons")]]
-                    await update.message.reply_text("❌ Gagal. Kamu belum join Grup Comsect. Koin di-refund.", reply_markup=InlineKeyboardMarkup(keyboard))
-                else: await update.message.reply_text("❌ Gagal set title. Koin di-refund.")
-        except Exception: await update.message.reply_text("❌ Terjadi kesalahan saat beli title.")
+                    await update.message.reply_text("❌ Gagal. Kamu belum join Grup Comsect. Koin di-refund.", reply_markup=get_main_keyboard())
+                else: await update.message.reply_text("❌ Gagal set title. Koin di-refund.", reply_markup=get_main_keyboard())
+        except Exception: await update.message.reply_text("❌ Terjadi kesalahan saat beli title.", reply_markup=get_main_keyboard())
         return
 
     elif state == 'WAITING_LIVE_VIDEO':
         context.user_data['state'] = None 
-        if not _get_video_file_from_message(update.message): return await update.message.reply_text("❌ Itu bukan video!")
+        if not _get_video_file_from_message(update.message): return await update.message.reply_text("❌ Itu bukan video! Aksi dibatalkan.", reply_markup=get_main_keyboard())
         return await live_photo_handler(update, context) 
 
     # FASE 3: DEFAULT (KIRIM MENFESS)
     context.user_data['state'] = None 
     pesan_teks_lower = pesan_teks.lower()
-    if any(re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower) for bw in CACHE_BAD_WORDS): return await update.message.reply_text("❌ Pesan ditolak karena mengandung kata terlarang.")
+    if any(re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower) for bw in CACHE_BAD_WORDS): return await update.message.reply_text("❌ Pesan ditolak karena mengandung kata terlarang.", reply_markup=get_main_keyboard())
 
     if MENFESS_MODE == "auto":
-        if not update.message.text: return await update.message.reply_text("❌ Sesi auto aktif! Kirim teks saja (tanpa media).")
-        if len(update.message.text) > 70: return await update.message.reply_text(f"❌ Menfess terlalu panjang (Maks 70, saat ini {len(update.message.text)}).")
+        if not update.message.text: return await update.message.reply_text("❌ Sesi auto aktif! Kirim teks saja (tanpa media).", reply_markup=get_main_keyboard())
+        if len(update.message.text) > 70: return await update.message.reply_text(f"❌ Menfess terlalu panjang (Maks 70, saat ini {len(update.message.text)}).", reply_markup=get_main_keyboard())
         if (update.message.entities and any(ent.type == "mention" for ent in update.message.entities)) or re.search(r'(?:^|\s)@/?\w+', pesan_teks):
-            return await update.message.reply_text("❌ Dilarang mention username!")
+            return await update.message.reply_text("❌ Dilarang mention username!", reply_markup=get_main_keyboard())
 
         teks_asli = update.message.text
         target_username = username or first_name
@@ -642,15 +648,15 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text(f"✅ Terkirim! 🪶" + (f"\n💰 *+50 Coins* (Saldo: {new_balance})" if new_balance else ""), reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
             try: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id}).execute()
             except Exception: pass
-        except Exception: await update.message.reply_text("❌ Gagal mengirim menfess.")
+        except Exception: await update.message.reply_text("❌ Gagal mengirim menfess.", reply_markup=get_main_keyboard())
     else:
         # Mode Manual Review
         try:
             fw_msg = await context.bot.copy_message(chat_id=ADMIN_GROUP_ID, from_chat_id=user_id, message_id=update.message.message_id)
             kb = [[InlineKeyboardButton("✅ Acc (CS ON)", callback_data=f"mf|A_ON|{user_id}|{update.message.message_id}"), InlineKeyboardButton("🔕 Acc (CS OFF)", callback_data=f"mf|A_OFF|{user_id}|{update.message.message_id}")], [InlineKeyboardButton("❌ Tolak", callback_data=f"mf|R|{user_id}|{update.message.message_id}")]]
             await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"🚨 *REVIEW MENFESS*\n👤 Pengirim: @{username or first_name}\n🆔 `{user_id}`", reply_to_message_id=fw_msg.message_id, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-            await update.message.reply_text("⏳ Masuk ke antrean admin review.")
-        except Exception: await update.message.reply_text("❌ Gagal antre review.")
+            await update.message.reply_text("⏳ Masuk ke antrean admin review.", reply_markup=get_main_keyboard())
+        except Exception: await update.message.reply_text("❌ Gagal antre review.", reply_markup=get_main_keyboard())
 
 # === HANDLER GRUP & ADMIN LAINNYA ===
 async def handle_discussion(update: Update, context: CallbackContext):
