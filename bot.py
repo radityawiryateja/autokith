@@ -1141,7 +1141,7 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 5. Inject Metadata ke JPG (Pakai path exif_exe)
         subprocess.run([
             exif_exe, '-overwrite_original',
-            f'-MakerApple:17={asset_id}',
+            f'-XMP:ContentIdentifier={asset_id}',
             output_jpg
         ], check=True)
 
