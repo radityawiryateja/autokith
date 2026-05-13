@@ -167,6 +167,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await update.message.reply_text("👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
+async def get_group_id(update: Update, context: CallbackContext):
+    await update.message.reply_text(f"🆔 ID: `{update.effective_chat.id}`\n🏷️ Nama: {update.effective_chat.title or 'Private'}", parse_mode="Markdown")
+
 # === FITUR LEADERBOARD ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -684,6 +687,7 @@ def main():
     application.add_handler(CommandHandler('setrequired', set_required_channels))
     application.add_handler(CommandHandler('addcommand', add_command_admin))
     application.add_handler(CommandHandler('deletecommand', delete_command_admin))
+    application.add_handler(CommandHandler('grupid', get_group_id))
     application.add_handler(CommandHandler('settings', settings_admin))
     
     # Handler State Machine Private Message
