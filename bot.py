@@ -1608,12 +1608,13 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if charged:
             try:
                 await db(lambda: supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute())
+                ulang_note = f"- silahkan coba kembali."
                 refund_note = f"\n\nKoin kamu telah di-Refund {LIVE_PHOTO_PRICE} Coins."
             except Exception as refund_err:
                 logger.error(f"Gagal refund Live Photo untuk {user_id}: {refund_err}")
 
         await msg.reply_text(
-            f"❌ Gagal memproses Live Photo:\n{str(e)[:1500]}{refund_note}",
+            f"❌ Gagal memproses Live Photo:\n{str(e)[:1500]}{ulang_note}{refund_note}",
             reply_markup=get_main_keyboard(),
         )
     finally:
