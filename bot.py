@@ -1149,7 +1149,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(
             f"🎯 *GAME DIMULAI!*\nCek DM bot untuk kata rahasia!\n\n🔄 *Urutan Bermain:*\n{urutan}\n\n"
             f"{cara_main}\n\n"
-            f"⏳ *Waktu: 5 Menit (5 Ronde @1 menit)*", parse_mode="Markdown"
+            f"⏳ *Waktu: 10 Menit (2 menit/Ronde)*", parse_mode="Markdown"
         )
 
         asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context))
@@ -1158,7 +1158,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # === LOOP TIMER & NOTIF DM ===
 async def run_game_timer(chat_id, game_id, thread_id, context):
     for i in range(1, 6):
-        await asyncio.sleep(60)
+        await asyncio.sleep(120)
         res = await db(lambda: supabase.table("uc_active_games").select("status, players").eq("game_id", game_id).execute())
         if not res.data:
             return
@@ -1191,7 +1191,7 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
 
     # Fase Voting
     await db(lambda: supabase.table("uc_active_games").update({"status": "voting"}).eq("game_id", game_id).execute())
-    pesan_vote = "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 90 Detik.\nKetik: `/sus @username` di komentar ini untuk menuduh Undercover!"
+    pesan_vote = "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 2 menit.\nKetik: `/sus @username` di komentar ini untuk menuduh Undercover!"
     vote_msg = await context.bot.send_message(chat_id, pesan_vote, reply_to_message_id=game_id, parse_mode="Markdown")
     vote_link = await get_discussion_link(vote_msg.message_id, thread_id)
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Ke Sesi Vote", url=vote_link)]])
@@ -1202,7 +1202,7 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
         except Exception:
             pass
 
-    await asyncio.sleep(90)
+    await asyncio.sleep(120)
     await tally_votes(chat_id, game_id, thread_id, context)
 
 
