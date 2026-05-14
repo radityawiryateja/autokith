@@ -213,7 +213,6 @@ async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👤 *PROFIL KAMU*\n\n"
             f"🆔 ID: `{user_id}`\n"
-            f"🏷️ Username: @{username}\n"
             f"🪙 Saldo Kith-Coins: *{coins}*\n"
             f"🏆 Total Koin Diperoleh: *{total_coins}*\n"
         )
