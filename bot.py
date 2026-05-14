@@ -837,14 +837,7 @@ async def menu(update: Update, context: CallbackContext):
         balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
     except:
         balance = 0
-
-    menu_text = (
-        "𔐼 *Kitheons:* [@kitheons](https://t.me/kitheons)\n"
-        "𔐼 *Ch Arsip:* [@kithives](https://t.me/kithives)\n\n"
-        f"🪙 *Kith-Coins Kamu:* {balance}\n\n"
-        "Gunakan `/buytitle <nama>` untuk beli Custom Title seharga 500 Koin!"
-    )
-    await update.message.reply_text(menu_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 Info Kitheons", url="https://t.me/kithives")]]))
+        
     await update.message.reply_text("👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1584,6 +1577,22 @@ async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
 
+    application.add_handler(CommandHandler("addhashtag", add_hashtag))
+    application.add_handler(CommandHandler("removehashtag", remove_hashtag))
+    application.add_handler(CommandHandler("enablehashtag", enable_hashtag))
+    application.add_handler(CommandHandler("disablehashtag", disable_hashtag))
+    
+    # Fitur Banned Words
+    application.add_handler(CommandHandler("addbadwords", add_badwords))
+    application.add_handler(CommandHandler("removebadwords", remove_badwords))
+    application.add_handler(CommandHandler("listbadwords", list_badwords))
+    
+    application.add_handler(CommandHandler('broadcastfw', broadcast_forward))
+    application.add_handler(CommandHandler('broadcast', broadcast))
+    application.add_handler(CommandHandler("addcommand", add_command))
+    application.add_handler(CommandHandler("deletecommand", delete_command))
+    application.add_handler(CommandHandler("settings", settings))
+
     # Commands admin
     application.add_handler(CommandHandler('block', block_user))
     application.add_handler(CommandHandler('unblock', unblock_user))
@@ -1617,22 +1626,6 @@ def main():
 
     # Command /live untuk convert video
     application.add_handler(CommandHandler('live', live_photo_handler))
-    
-    application.add_handler(CommandHandler("addhashtag", add_hashtag))
-    application.add_handler(CommandHandler("removehashtag", remove_hashtag))
-    application.add_handler(CommandHandler("enablehashtag", enable_hashtag))
-    application.add_handler(CommandHandler("disablehashtag", disable_hashtag))
-    
-    # Fitur Banned Words
-    application.add_handler(CommandHandler("addbadwords", add_badwords))
-    application.add_handler(CommandHandler("removebadwords", remove_badwords))
-    application.add_handler(CommandHandler("listbadwords", list_badwords))
-    
-    application.add_handler(CommandHandler('broadcastfw', broadcast_forward))
-    application.add_handler(CommandHandler('broadcast', broadcast))
-    application.add_handler(CommandHandler("addcommand", add_command))
-    application.add_handler(CommandHandler("deletecommand", delete_command))
-    application.add_handler(CommandHandler("settings", settings))
 
     # Conversation Handler untuk Menfess (Hanya masuk sini kalau AUTO)
     conv_handler = ConversationHandler(
