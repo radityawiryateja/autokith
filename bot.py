@@ -1169,13 +1169,46 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
         players = game['players']
 
         recap = f"⏱️ *Ronde {i} Selesai!*\n\n*Rekap Kata Pemain:*\n"
-        for pid, pdata in players.items():
-            word = pdata.get('current_word', "")
-            display_word = f"*{word}*" if word else "(Tidak menyebutkan kata)"
-            recap += f"- {pdata['name']}: {display_word}\n"
-            players[pid]['current_word'] = ""
+        dead_players = []
+        
+        for pid, pdata in list(players.items()):
+            word = pdata.get('current_word', "")
+            if not word:
+                # Tambah hitungan absen
+                pdata['missed_turns'] = pdata.get('missed_turns', 0) + 1
+                if pdata['missed_turns'] >= 2:
+                    display_word = "💀 *DIEKSEKUSI MATI (AFK 2x)*"
+                    dead_players.append(pid)
+                else:
+                    display_word = "⚠️ *(Tidak ada deskripsi, awas dieksekusi!)*"
+            else:
+                pdata['missed_turns'] = 0
+                display_word = f"*{word}*"
+                
+            recap += f"- {pdata['name']}: {display_word}\n"
+            
+            if pid not in dead_players:
+                players[pid]['current_word'] = ""
 
-        await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute())
+        # Eksekusi mati (hapus dari daftar pemain)
+        for pid in dead_players:
+            del players[pid]
+
+        await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute())
+
+        # Cek kondisi menang kalau ada yang mati dieksekusi
+        if dead_players:
+            under_id = str(game['undercover_id'])
+            if under_id in dead_players:
+                msg = f"{recap}\n🎉 *GAME OVER!* Undercover tewas dieksekusi karena AFK! **CIVILIAN MENANG!**"
+                await context.bot.send_message(chat_id, msg, reply_to_message_id=game_id, parse_mode="Markdown")
+                await db(lambda: supabase.table("uc_active_games").delete().eq("game_id", game_id).execute())
+                return
+            elif len(players) <= 2 and under_id in players:
+                msg = f"{recap}\n😈 *GAME OVER!* Terlalu banyak Civilian mati AFK! **UNDERCOVER MENANG!**"
+                await context.bot.send_message(chat_id, msg, reply_to_message_id=game_id, parse_mode="Markdown")
+                await db(lambda: supabase.table("uc_active_games").delete().eq("game_id", game_id).execute())
+                return
 
         if i < 5:
             pesan_ronde = f"{recap}\n🔔 Masuk *Ronde {i+1}*! Silakan diskusi dan ketik `/vote [deskripsi]` lagi!"
