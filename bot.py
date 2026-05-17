@@ -970,11 +970,10 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Kirim file .txt jika ada user yang gagal
     if failed_users:
         failed_text = "\n".join(failed_users)
-        file = io.BytesIO(failed_text.encode('utf-8'))
-        file.name = "failed_broadcast_forward.txt"
         await context.bot.send_document(
             chat_id=update.effective_chat.id, 
-            document=file, 
+            document=failed_text.encode('utf-8'), # Langsung ubah ke bytes
+            filename="failed_broadcast_forward.txt", # Gunakan parameter filename
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima broadcast forward."
         )
 
@@ -1008,11 +1007,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Kirim file .txt jika ada user yang gagal
     if failed_users:
         failed_text = "\n".join(failed_users)
-        file = io.BytesIO(failed_text.encode('utf-8'))
-        file.name = "failed_broadcast.txt"
         await context.bot.send_document(
             chat_id=update.effective_chat.id, 
-            document=file, 
+            document=failed_text.encode('utf-8'), # Langsung ubah ke bytes
+            filename="failed_broadcast.txt", # Gunakan parameter filename
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima pesan broadcast."
         )
 
