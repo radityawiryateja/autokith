@@ -936,41 +936,85 @@ async def menu(update: Update, context: CallbackContext):
 
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
-        return await update.message.reply_text("Format: /broadcastfw <link>")
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcastfw <link>")
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
-    if not match:
-        return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya t.me/username_channel/angka")
+    if not match: return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya t.me/username_channel/angka")
     channel_username, message_id = match.groups()
-    if channel_username == "c":
-        return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
+    if channel_username == "c": return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
+
     user_list = await get_all_user_ids()
+    total_users = len(user_list)
+    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database untuk dibroadcast.")
+
     sc, fc = 0, 0
-    for user_id in user_list:
+    failed_users = [] # List untuk menyimpan ID user yang gagal
+    
+    status_msg = await update.message.reply_text(f"⏳ *Memulai proses broadcast forward ke {total_users} user...*\nMohon tunggu ya!", parse_mode="Markdown")
+    
+    for i, user_id in enumerate(user_list, 1):
         try:
             await context.bot.forward_message(chat_id=user_id, from_chat_id=f"@{channel_username}", message_id=int(message_id))
             sc += 1
-        except Exception:
+        except Exception: 
             fc += 1
+            failed_users.append(str(user_id)) # Masukkan ID ke list jika gagal
+            
+        if i % 20 == 0:
+            try: await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({i}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+            except Exception: pass
         await asyncio.sleep(0.05)
-    await update.message.reply_text(f"✅ Selesai! Berhasil: {sc}, Gagal: {fc}")
+        
+    await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
+    # Kirim file .txt jika ada user yang gagal
+    if failed_users:
+        failed_text = "\n".join(failed_users)
+        file = io.BytesIO(failed_text.encode('utf-8'))
+        file.name = "failed_broadcast_forward.txt"
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id, 
+            document=file, 
+            caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima broadcast forward."
+        )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
-        return await update.message.reply_text("Format: /broadcast <teks>")
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcast <teks>")
     message_text = " ".join(context.args)
     user_list = await get_all_user_ids()
+    total_users = len(user_list)
+    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database untuk dibroadcast.")
+
     sc, fc = 0, 0
-    for user_id in user_list:
+    failed_users = [] # List untuk menyimpan ID user yang gagal
+    
+    status_msg = await update.message.reply_text(f"⏳ *Memulai proses broadcast ke {total_users} user...*\nMohon tunggu ya!", parse_mode="Markdown")
+    
+    for i, user_id in enumerate(user_list, 1):
         try:
             await context.bot.send_message(chat_id=user_id, text=message_text)
             sc += 1
-        except Exception:
+        except Exception: 
             fc += 1
+            failed_users.append(str(user_id)) # Masukkan ID ke list jika gagal
+            
+        if i % 20 == 0:
+            try: await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({i}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+            except Exception: pass
         await asyncio.sleep(0.05)
-    await update.message.reply_text(f"✅ Selesai! Berhasil: {sc}, Gagal: {fc}")
+        
+    await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+
+    # Kirim file .txt jika ada user yang gagal
+    if failed_users:
+        failed_text = "\n".join(failed_users)
+        file = io.BytesIO(failed_text.encode('utf-8'))
+        file.name = "failed_broadcast.txt"
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id, 
+            document=file, 
+            caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima pesan broadcast."
+        )
 
 
 async def add_command(update: Update, context: CallbackContext) -> None:
