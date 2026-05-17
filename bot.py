@@ -294,9 +294,9 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await db(lambda: supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute())
             logger.error(f"Gagal set title Telegram: {telegram_err}")
             if "User_Not_Participant" in str(telegram_err) or "user is not a member" in str(telegram_err):
-                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu!\n\nKoin kamu telah dikembalikan (Refund).")
+                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu dan jangan gunakan emoji!\n\nKoin kamu telah dikembalikan (Refund).")
             else:
-                await update.message.reply_text("❌ Gagal menerapkan title di grup. Pastikan bot memiliki izin 'Manage Tags' (Kelola Peran Anggota).\n\nKoin kamu telah dikembalikan (Refund).")
+                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu dan jangan gunakan emoji.\n\nKoin kamu telah dikembalikan (Refund).")
 
     except Exception as db_err:
         logger.error(f"Error Database saat beli title: {db_err}")
@@ -1159,7 +1159,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def run_game_timer(chat_id, game_id, thread_id, context):
     for i in range(1, 6):
         await asyncio.sleep(120)
-        res = await db(lambda: supabase.table("uc_active_games").select("status, players").eq("game_id", game_id).execute())
+        res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
         if not res.data:
             return
         game = res.data[0]
