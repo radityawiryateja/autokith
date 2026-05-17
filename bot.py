@@ -1157,7 +1157,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # === LOOP TIMER & NOTIF DM ===
 async def run_game_timer(chat_id, game_id, thread_id, context):
-    for i in range(1, 6):
+    for i in range(start_round, 6):
         await asyncio.sleep(120)
         res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
         if not res.data:
@@ -1356,6 +1356,45 @@ async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
     )
 
+async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID_DISKUSI:
+        return await update.message.reply_text("🎮 Command ini hanya bisa digunakan di dalam Grup Diskusi!")
+
+    # Cek apakah format command sudah benar (butuh 2 argumen: id_game dan ronde)
+    if len(context.args) < 2:
+        return await update.message.reply_text(
+            "⚠️ Format salah!\nGunakan: `/continue [id_game] [ronde]`\nContoh: `/continue 123456789 3`", 
+            parse_mode="Markdown"
+        )
+
+    try:
+        game_id = int(context.args[0])
+        start_round = int(context.args[1])
+    except ValueError:
+        return await update.message.reply_text("⚠️ ID Game dan Ronde harus berupa angka!")
+
+    if start_round < 1 or start_round > 5:
+        return await update.message.reply_text("⚠️ Ronde harus berada di antara 1 sampai 5!")
+
+    # Cari game di database
+    res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
+    if not res.data:
+        return await update.message.reply_text(f"❌ Game dengan ID {game_id} tidak ditemukan atau sudah dibatalkan/selesai.")
+
+    game = res.data[0]
+    
+    # Pastikan status dikembalikan ke "playing" jika sebelumnya nyangkut di "voting" atau "lobby"
+    await db(lambda: supabase.table("uc_active_games").update({"status": "playing"}).eq("game_id", game_id).execute())
+
+    thread_id = update.message.message_thread_id
+    
+    await update.message.reply_text(
+        f"▶️ *MELANJUTKAN GAME*\nGame ID: {game_id}\nRonde aktif: {start_round}\n\n⏳ *Waktu: 2 menit!* Silakan lanjut diskusi dan `/vote`!", 
+        parse_mode="Markdown"
+    )
+
+    # Jalankan ulang timer dengan parameter start_round
+    asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context, start_round=start_round))
 
 # === SISTEM LIVE PHOTO ===
 def _get_video_file_from_message(msg):
