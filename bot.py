@@ -1350,10 +1350,14 @@ async def tally_votes(chat_id, game_id, thread_id, context):
 # === CONTINUE GAME (/continue) ===
 async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID_DISKUSI:
-        return await update.message.reply_text("🎮 Command ini hanya bisa digunakan di Grup Diskusi!")
+        return await update.message.reply_text("🎮 Command ini hanya bisa digunakan di dalam Grup Diskusi!")
 
+    # Cek format argumen
     if len(context.args) < 2:
-        return await update.message.reply_text("⚠️ Gunakan format: `/continue [id_game] [ronde]`", parse_mode="Markdown")
+        return await update.message.reply_text(
+            "⚠️ Format salah!\nGunakan: `/continue [id_game] [ronde]`\nContoh: `/continue 123456789 3`", 
+            parse_mode="Markdown"
+        )
 
     try:
         game_id = int(context.args[0])
@@ -1362,28 +1366,59 @@ async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("⚠️ ID Game dan Ronde harus berupa angka!")
 
     if start_round < 1 or start_round > 5:
-        return await update.message.reply_text("⚠️ Ronde harus 1 - 5!")
+        return await update.message.reply_text("⚠️ Ronde harus berada di antara 1 sampai 5!")
 
+    # Ambil data game dari database
     res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
-    if not hasattr(res, 'data') or not res.data:
-        return await update.message.reply_text(f"❌ Game ID {game_id} tidak aktif.")
+    if not res.data:
+        return await update.message.reply_text(f"❌ Game dengan ID {game_id} tidak ditemukan atau sudah selesai.")
 
     game = res.data[0]
     players = game['players']
+    undercover_id = str(game['undercover_id'])
+    civilian_word = game['civilian_word']
+    undercover_word = game['undercover_word']
+    
+    # Set status kembali ke playing
     await db(lambda: supabase.table("uc_active_games").update({"status": "playing"}).eq("game_id", game_id).execute())
 
     thread_id = update.message.message_thread_id
     group_link = await get_discussion_link(game_id, thread_id)
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Kembali ke Grup", url=group_link)]])
     
-    pesan_dm = f"▶️ *GAME DILANJUTKAN!*\n\nLanjut dari *Ronde {start_round}*.\nAyo ke grup, diskusi dan ketik `/vote`!"
+    # ==== PROSES KIRIM NOTIFIKASI KE DM MASING-MASING PEMAIN ====
     for pid in players.keys():
+        # Kirim ulang kata rahasia mereka biar kalau lupa tidak perlu scroll grup/DM lama
+        kata_rahasia = undercover_word if pid == undercover_id else civilian_word
+        
+        pesan_dm = (
+            f"▶️ *GAME UNDERCOVER DILANJUTKAN!*\n\n"
+            f"🔄 Game masuk kembali ke *Ronde {start_round}*.\n"
+            f"🤫 *Pengingat Katamu:* *{kata_rahasia}*\n\n"
+            f"⏳ Yuk balik ke grup buat diskusi dan ketik `/vote [deskripsi]`!"
+        )
         try:
-            await context.bot.send_message(int(pid), pesan_dm, reply_markup=btn_grup, parse_mode="Markdown")
-        except Exception:
+            await context.bot.send_message(
+                chat_id=int(pid), 
+                text=pesan_dm, 
+                reply_markup=btn_grup, 
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Gagal kirim DM ke player {pid}: {e}")
             pass
+    # ============================================================
 
-    await update.message.reply_text(f"▶️ *MELANJUTKAN GAME*\nGame ID: `{game_id}`\nRonde: *{start_round}*\n\n⏳ *Waktu: 2 menit!*", parse_mode="Markdown")
+    # Kirim konfirmasi di Grup Diskusi
+    await update.message.reply_text(
+        f"▶️ *MELANJUTKAN GAME*\n"
+        f"ID Game: `{game_id}`\n"
+        f"Melanjutkan dari: *Ronde {start_round}*\n\n"
+        f"📢 Notifikasi kelanjutan game dan pengingat kata rahasia sudah dikirim ke DM seluruh pemain yang terdaftar!", 
+        parse_mode="Markdown"
+    )
+
+    # Picu ulang task background timer
     asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context, start_round=start_round))
 
 # === SISTEM LIVE PHOTO ===
