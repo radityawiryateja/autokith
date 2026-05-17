@@ -350,9 +350,9 @@ async def _apply_title_purchase(update: Update, context: ContextTypes.DEFAULT_TY
             await db(lambda: supabase.table("users").update({"kith_coins": current_balance}).eq("user_id", user_id).execute())
             logger.error(f"Gagal set title Telegram: {telegram_err}")
             if "User_Not_Participant" in str(telegram_err) or "user is not a member" in str(telegram_err):
-                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan kamu sudah join ke grup diskusi terlebih dahulu!\n\nKoin kamu telah dikembalikan (Refund).", reply_markup=get_main_keyboard())
+                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan koin kamu mencukupi dan sudah join ke grup diskusi terlebih dahulu!\n\nKoin kamu telah dikembalikan (Refund).", reply_markup=get_main_keyboard())
             else:
-                await update.message.reply_text("❌ Gagal menerapkan title di grup. Pastikan bot memiliki izin 'Manage Tags' (Kelola Peran Anggota).\n\nKoin kamu telah dikembalikan (Refund).", reply_markup=get_main_keyboard())
+                await update.message.reply_text("❌ Gagal menerapkan title. Pastikan koin kamu mencukupi dan sudah join ke grup diskusi terlebih dahulu!.\n\nKoin kamu telah dikembalikan (Refund).", reply_markup=get_main_keyboard())
 
     except Exception as db_err:
         logger.error(f"Error Database saat beli title: {db_err}")
