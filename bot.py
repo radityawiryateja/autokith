@@ -1183,11 +1183,11 @@ async def submit_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # === LOOP TIMER (DENGAN FIX SELECT "*") ===
+# === LOOP TIMER (DENGAN FIX SELECT "*" & NOTIF AFK GAME OVER) ===
 async def run_game_timer(chat_id, game_id, thread_id, context, start_round=1):
     for i in range(start_round, 6):
         await asyncio.sleep(120)  # Ganti jadi 15 saat mau testing biar cepat
         
-        # PERBAIKAN: Harus select("*") agar "undercover_id" ikut terambil
         res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
         if not hasattr(res, 'data') or not res.data:
             return
@@ -1198,6 +1198,10 @@ async def run_game_timer(chat_id, game_id, thread_id, context, start_round=1):
         players = game['players']
         recap = f"⏱️ *Ronde {i} Selesai!*\n\n*Rekap Kata Pemain:*\n"
         dead_players = []
+        
+        # Simpan daftar ID semua pemain sebelum ada yang dihapus karena AFK
+        # agar semuanya tetap dapat notif DM dan koin.
+        all_players_id = list(players.keys())
         
         for pid, pdata in list(players.items()):
             word = pdata.get('current_word', "")
@@ -1216,22 +1220,45 @@ async def run_game_timer(chat_id, game_id, thread_id, context, start_round=1):
             if pid not in dead_players:
                 players[pid]['current_word'] = ""
 
-        # Eksekusi mati
+        # Eksekusi mati (hapus dari dict players)
         for pid in dead_players:
             del players[pid]
 
         await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute())
 
+        # CEK KONDISI GAME OVER KARENA AFK
         if dead_players:
             under_id = str(game['undercover_id'])
+            is_game_over = False
+            hasil_text = ""
+            is_undercover_caught = False
+
             if under_id in dead_players:
-                msg = f"{recap}\n🎉 *GAME OVER!* Undercover tewas dieksekusi karena AFK! **CIVILIAN MENANG!**"
-                await context.bot.send_message(chat_id, msg, reply_to_message_id=game_id, parse_mode="Markdown")
-                await db(lambda: supabase.table("uc_active_games").delete().eq("game_id", game_id).execute())
-                return
+                hasil_text = f"{recap}\n🎉 *GAME OVER!* Undercover tewas dieksekusi karena AFK! **CIVILIAN MENANG!**\n\n💰 Hadiah:\n- Civilian: +200 Coins\n- Undercover: +100 Coins"
+                is_game_over = True
+                is_undercover_caught = True
             elif len(players) <= 2 and under_id in players:
-                msg = f"{recap}\n😈 *GAME OVER!* Terlalu banyak Civilian mati AFK! **UNDERCOVER MENANG!**"
-                await context.bot.send_message(chat_id, msg, reply_to_message_id=game_id, parse_mode="Markdown")
+                hasil_text = f"{recap}\n😈 *GAME OVER!* Terlalu banyak Civilian mati AFK! **UNDERCOVER MENANG!**\n\n💰 Hadiah:\n- Undercover: +200 Coins\n- Civilian: +100 Coins"
+                is_game_over = True
+                is_undercover_caught = False
+
+            # Jika game berakhir karena AFK, bagikan koin dan kirim DM!
+            if is_game_over:
+                result_msg = await context.bot.send_message(chat_id, hasil_text, reply_to_message_id=game_id, parse_mode="Markdown")
+                result_link = await get_discussion_link(result_msg.message_id, thread_id)
+                btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Lihat Hasil Diskusi", url=result_link)]])
+
+                for pid in all_players_id:
+                    # Logika bagi koin
+                    koin = 100 if pid == under_id else 200 if is_undercover_caught else (200 if pid == under_id else 100)
+                    await add_kith_coins(int(pid), koin)
+                    
+                    # Kirim DM
+                    try:
+                        await context.bot.send_message(int(pid), f"🏁 *GAME OVER (EKSEKUSI AFK)!*\n\n{hasil_text}", reply_markup=btn_grup, parse_mode="Markdown")
+                    except Exception:
+                        pass
+                
                 await db(lambda: supabase.table("uc_active_games").delete().eq("game_id", game_id).execute())
                 return
                 
