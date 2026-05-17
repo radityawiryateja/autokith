@@ -224,10 +224,9 @@ async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === FITUR LEADERBOARD ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # FIX: Tidak lagi memanggil get_chat() per user (N serial API calls).
-        # Username sudah disimpan di DB saat save_user(), langsung pakai dari sana.
+        # HANYA mengambil user_id dan koin dari database (tanpa username)
         res = await db(lambda: supabase.table("users")
-                       .select("user_id, username, kith_coins, total_kith_coins")
+                       .select("user_id, kith_coins, total_kith_coins")
                        .order("total_kith_coins", desc=True)
                        .limit(10)
                        .execute())
@@ -238,11 +237,24 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, row in enumerate(res.data):
             user_id = row.get("user_id")
             coins = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else row.get("kith_coins", 0)
-            uname = row.get("username")
-            display_name = f"@{uname}" if uname else f"👤 User ID: {user_id}"
-            text += f"{i+1}. {display_name} - *{coins}* Coins\n"
+            
+            # Mencoba menarik Display Name (first name) langsung dari Telegram
+            try:
+                chat = await context.bot.get_chat(user_id)
+                display_name = chat.first_name
+                # Jika ingin menyertakan nama belakang juga (opsional):
+                # if chat.last_name:
+                #     display_name += f" {chat.last_name}"
+            except Exception:
+                # Fallback: Jika bot gagal menarik data (misal user memblokir bot)
+                display_name = f"Pemain {user_id}"
+
+            # Format Hyperlink ke profil menggunakan ID, bukan username
+            text += f"{i+1}. [{display_name}](tg://user?id={user_id}) - *{coins}* Coins\n"
 
         text += "\nLeaderboard dihitung dari total koin yang pernah diperoleh, bukan saldo saat ini."
+        
+        # Wajib menggunakan parse_mode="Markdown" agar hyperlink tg://user bisa diklik
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Gagal memuat leaderboard: {e}")
