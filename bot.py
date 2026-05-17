@@ -1047,7 +1047,6 @@ async def get_discussion_link(comment_msg_id: int, thread_id: int = None):
         logger.error(f"Gagal membuat link diskusi: {e}")
     return fallback
 
-
 # === LOBBY & CALLBACK GAME ===
 async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID_DISKUSI:
@@ -1057,13 +1056,16 @@ async def start_undercover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     creator_name = update.effective_user.first_name
     creator_username = update.effective_user.username or str(creator_id)
 
-    keyboard = [[InlineKeyboardButton("🎮 Gabung Game", callback_data="uc_join")], [InlineKeyboardButton("▶️ Mulai Game", callback_data="uc_start")]]
+    keyboard = [
+        [InlineKeyboardButton("🎮 Gabung Game", callback_data="uc_join")], 
+        [InlineKeyboardButton("▶️ Mulai Game", callback_data="uc_start")]
+    ]
     msg = await update.message.reply_text(
         f"🕵️‍♂️ *GAME UNDERCOVER*\n\n👑 Room Master: {creator_name}\n\n👥 *Pemain Terdaftar:*\n1. {creator_name} (@{creator_username})\n\n*(Minimal 3 pemain)*",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
 
-    players_data = {str(creator_id): {"name": creator_name, "username": creator_username, "current_word": ""}}
+    players_data = {str(creator_id): {"name": creator_name, "username": creator_username, "current_word": "", "missed_turns": 0}}
     try:
         await db(lambda: supabase.table("uc_active_games").insert({
             "game_id": msg.message_id, "chat_id": update.effective_chat.id, "status": "lobby",
@@ -1102,7 +1104,7 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if str(user_id) in players:
             return
 
-        players[str(user_id)] = {"name": user_name, "username": username, "current_word": ""}
+        players[str(user_id)] = {"name": user_name, "username": username, "current_word": "", "missed_turns": 0}
         await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute())
 
         player_list = "\n".join([f"{i+1}. {p['name']} (@{p['username']})" for i, p in enumerate(players.values())])
@@ -1140,41 +1142,66 @@ async def handle_uc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         urutan = "\n".join([f"{i+1}. {players[pid]['name']} (@{players[pid]['username']})" for i, pid in enumerate(player_ids)])
         cara_main = (
             "📜 *TATA CARA MAIN:*\n"
-            "1. Cek kata rahasia kamu di DM bot. Jangan kasih tahu siapa pun.\n"
-            "2. Tiap ronde, ketik `/vote [deskripsi]` di grup sesuai giliran.\n"
-            "3. *Dilarang menyebut kata yang kamu pegang secara gamblang/langsung.*\n"
-            "4. Sebutkan ciri-ciri, fungsi, suasana, rasa, bentuk, atau petunjuk halus dari kata itu.\n"
-            "5. Setelah 5 ronde, vote siapa yang paling mencurigakan dengan `/sus @username`."
+            "1. Cek kata rahasia kamu di DM bot.\n"
+            "2. Tiap ronde, ketik `/vote [deskripsi]` di grup.\n"
+            "3. *Dilarang menyebut kata secara langsung.*\n"
+            "4. Setelah 5 ronde, vote siapa yang mencurigakan dengan `/sus @username`."
         )
         await query.edit_message_text(
-            f"🎯 *GAME DIMULAI!*\nCek DM bot untuk kata rahasia!\n\n🔄 *Urutan Bermain:*\n{urutan}\n\n"
-            f"{cara_main}\n\n"
-            f"⏳ *Waktu: 10 Menit (2 menit/Ronde)*", parse_mode="Markdown"
+            f"🎯 *GAME DIMULAI!*\nCek DM bot untuk kata rahasia!\n\n🔄 *Urutan Bermain:*\n{urutan}\n\n{cara_main}\n\n⏳ *Waktu: 10 Menit (2 menit/Ronde)*", 
+            parse_mode="Markdown"
         )
 
         asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context))
 
 
-# === LOOP TIMER & NOTIF DM ===
-async def run_game_timer(chat_id, game_id, thread_id, context):
+# === FITUR INPUT KATA (/vote) - WAJIB ADA AGAR PEMAIN TIDAK AFK ===
+async def submit_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID_DISKUSI:
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Format: `/vote [deskripsi kata kamu]`", parse_mode="Markdown")
+
+    voter_id = str(update.effective_user.id)
+    word = " ".join(context.args)
+
+    res = await db(lambda: supabase.table("uc_active_games").select("*").eq("status", "playing").execute())
+    if not res.data:
+        return await update.message.reply_text("❌ Tidak ada game yang sedang berjalan.")
+
+    game = next((g for g in res.data if voter_id in g['players']), None)
+    if not game:
+        return await update.message.reply_text("❌ Kamu tidak bermain di game manapun yang aktif.")
+
+    players = game['players']
+    if players[voter_id].get('current_word'):
+        return await update.message.reply_text("⚠️ Kamu sudah memberikan deskripsi untuk ronde ini!")
+
+    players[voter_id]['current_word'] = word
+    await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game['game_id']).execute())
+    await update.message.reply_text(f"✅ *{update.effective_user.first_name}* telah mengunci kata!", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+
+
+# === LOOP TIMER (DENGAN FIX SELECT "*") ===
+async def run_game_timer(chat_id, game_id, thread_id, context, start_round=1):
     for i in range(start_round, 6):
-        await asyncio.sleep(120)
+        await asyncio.sleep(120)  # Ganti jadi 15 saat mau testing biar cepat
+        
+        # PERBAIKAN: Harus select("*") agar "undercover_id" ikut terambil
         res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
-        if not res.data:
+        if not hasattr(res, 'data') or not res.data:
             return
         game = res.data[0]
         if game['status'] != 'playing':
             return
 
         players = game['players']
-
         recap = f"⏱️ *Ronde {i} Selesai!*\n\n*Rekap Kata Pemain:*\n"
         dead_players = []
         
         for pid, pdata in list(players.items()):
             word = pdata.get('current_word', "")
             if not word:
-                # Tambah hitungan absen
                 pdata['missed_turns'] = pdata.get('missed_turns', 0) + 1
                 if pdata['missed_turns'] >= 2:
                     display_word = "💀 *DIEKSEKUSI MATI (AFK 2x)*"
@@ -1186,17 +1213,15 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
                 display_word = f"*{word}*"
                 
             recap += f"- {pdata['name']}: {display_word}\n"
-            
             if pid not in dead_players:
                 players[pid]['current_word'] = ""
 
-        # Eksekusi mati (hapus dari daftar pemain)
+        # Eksekusi mati
         for pid in dead_players:
             del players[pid]
 
         await db(lambda: supabase.table("uc_active_games").update({"players": players}).eq("game_id", game_id).execute())
 
-        # Cek kondisi menang kalau ada yang mati dieksekusi
         if dead_players:
             under_id = str(game['undercover_id'])
             if under_id in dead_players:
@@ -1211,7 +1236,7 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
                 return
                 
         if i < 5:
-            pesan_ronde = f"{recap}\n🔔 Masuk *Ronde {i+1}*! Silakan diskusi dan ketik `/vote [deskripsi]` lagi!"
+            pesan_ronde = f"{recap}\n🔔 Masuk *Ronde {i+1}*! Silakan diskusi dan ketik `/vote [deskripsi]`!"
             round_msg = await context.bot.send_message(chat_id, pesan_ronde, reply_to_message_id=game_id, parse_mode="Markdown")
             round_link = await get_discussion_link(round_msg.message_id, thread_id)
             btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Ke Ronde Terbaru", url=round_link)]])
@@ -1224,7 +1249,7 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
 
     # Fase Voting
     await db(lambda: supabase.table("uc_active_games").update({"status": "voting"}).eq("game_id", game_id).execute())
-    pesan_vote = "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 2 menit.\nKetik: `/sus @username` di komentar ini untuk menuduh Undercover!"
+    pesan_vote = "🚨 *WAKTU HABIS!*\n\nSesi VOTE dimulai selama 2 menit.\nKetik: `/sus @username` untuk menuduh Undercover!"
     vote_msg = await context.bot.send_message(chat_id, pesan_vote, reply_to_message_id=game_id, parse_mode="Markdown")
     vote_link = await get_discussion_link(vote_msg.message_id, thread_id)
     btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Ke Sesi Vote", url=vote_link)]])
@@ -1239,7 +1264,7 @@ async def run_game_timer(chat_id, game_id, thread_id, context):
     await tally_votes(chat_id, game_id, thread_id, context)
 
 
-# === VOTE COMMAND ===
+# === VOTE COMMAND (/sus) ===
 async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID_DISKUSI:
         return
@@ -1251,16 +1276,13 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     res = await db(lambda: supabase.table("uc_active_games").select("*").eq("status", "voting").execute())
     if not res.data:
-        return await update.message.reply_text("❌ Tidak ada sesi voting yang aktif untukmu.")
+        return await update.message.reply_text("❌ Tidak ada sesi voting yang aktif.")
 
-    # FIX: cari game yang voter ini bermain, bukan asal ambil data[0].
-    # Bug lama: jika ada 2 game voting, voter bisa vote ke game yang salah.
     game = next((g for g in res.data if voter_id in g['players']), None)
     if not game:
         return await update.message.reply_text("❌ Kamu tidak bermain di sesi voting manapun.")
 
     players = game['players']
-
     target_id = None
     for pid, pdata in players.items():
         if pdata['username'].lower() == target_username:
@@ -1270,7 +1292,7 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await update.message.reply_text(f"❌ Pemain @{target_username} tidak ditemukan di game ini.")
 
-    votes = game['votes']
+    votes = game.get('votes', {})
     votes[voter_id] = target_id
     await db(lambda: supabase.table("uc_active_games").update({"votes": votes}).eq("game_id", game['game_id']).execute())
     await update.message.reply_text(f"✅ {update.effective_user.first_name} menuduh @{target_username}!", reply_to_message_id=update.message.message_id)
@@ -1279,13 +1301,13 @@ async def sus_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === TALLY & REWARDS ===
 async def tally_votes(chat_id, game_id, thread_id, context):
     res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
-    if not res.data:
+    if not hasattr(res, 'data') or not res.data:
         return
     game = res.data[0]
     if game['status'] != "voting":
         return
 
-    votes = game['votes']
+    votes = game.get('votes', {})
     players = game['players']
     under_id = str(game['undercover_id'])
 
@@ -1325,47 +1347,13 @@ async def tally_votes(chat_id, game_id, thread_id, context):
     await db(lambda: supabase.table("uc_active_games").delete().eq("game_id", game_id).execute())
 
 
-# === REVEAL ROLE (PREMIUM) ===
-async def reveal_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-
-    res = await db(lambda: supabase.table("uc_active_games").select("*").eq("status", "playing").execute())
-    if not res.data:
-        return await update.message.reply_text("❌ Tidak ada game yang sedang berjalan.")
-
-    game = next((g for g in res.data if user_id in g['players']), None)
-    if not game:
-        return await update.message.reply_text("❌ Kamu tidak bermain di game aktif manapun.")
-
-    koin_res = await db(lambda: supabase.table("users").select("kith_coins").eq("user_id", int(user_id)).execute())
-    saldo = koin_res.data[0]['kith_coins'] if koin_res.data else 0
-    if saldo < 500:
-        return await update.message.reply_text(f"❌ Koin tidak cukup. Butuh 500 Coins (Saldomu: {saldo}).")
-
-    await db(lambda: supabase.table("users").update({"kith_coins": saldo - 500}).eq("user_id", int(user_id)).execute())
-
-    undercover_name = game['players'][str(game['undercover_id'])]['name']
-    civ_word = game['civilian_word']
-    und_word = game['undercover_word']
-
-    await update.message.reply_text(
-        f"🔮 *REVEAL ROLE (Premium)* 🔮\n\n"
-        f"🤫 Undercover: *{undercover_name}*\n"
-        f"📝 Kata Civilian: *{civ_word}*\n"
-        f"📝 Kata Undercover: *{und_word}*\n\n"
-        f"*(Ssstt.. Saldo Koinmu dipotong 500)*", parse_mode="Markdown"
-    )
-
+# === CONTINUE GAME (/continue) ===
 async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID_DISKUSI:
-        return await update.message.reply_text("🎮 Command ini hanya bisa digunakan di dalam Grup Diskusi!")
+        return await update.message.reply_text("🎮 Command ini hanya bisa digunakan di Grup Diskusi!")
 
-    # Cek apakah format command sudah benar (butuh 2 argumen: id_game dan ronde)
     if len(context.args) < 2:
-        return await update.message.reply_text(
-            "⚠️ Format salah!\nGunakan: `/continue [id_game] [ronde]`\nContoh: `/continue 123456789 3`", 
-            parse_mode="Markdown"
-        )
+        return await update.message.reply_text("⚠️ Gunakan format: `/continue [id_game] [ronde]`", parse_mode="Markdown")
 
     try:
         game_id = int(context.args[0])
@@ -1374,26 +1362,28 @@ async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("⚠️ ID Game dan Ronde harus berupa angka!")
 
     if start_round < 1 or start_round > 5:
-        return await update.message.reply_text("⚠️ Ronde harus berada di antara 1 sampai 5!")
+        return await update.message.reply_text("⚠️ Ronde harus 1 - 5!")
 
-    # Cari game di database
     res = await db(lambda: supabase.table("uc_active_games").select("*").eq("game_id", game_id).execute())
-    if not res.data:
-        return await update.message.reply_text(f"❌ Game dengan ID {game_id} tidak ditemukan atau sudah dibatalkan/selesai.")
+    if not hasattr(res, 'data') or not res.data:
+        return await update.message.reply_text(f"❌ Game ID {game_id} tidak aktif.")
 
     game = res.data[0]
-    
-    # Pastikan status dikembalikan ke "playing" jika sebelumnya nyangkut di "voting" atau "lobby"
+    players = game['players']
     await db(lambda: supabase.table("uc_active_games").update({"status": "playing"}).eq("game_id", game_id).execute())
 
     thread_id = update.message.message_thread_id
+    group_link = await get_discussion_link(game_id, thread_id)
+    btn_grup = InlineKeyboardMarkup([[InlineKeyboardButton("Kembali ke Grup", url=group_link)]])
     
-    await update.message.reply_text(
-        f"▶️ *MELANJUTKAN GAME*\nGame ID: {game_id}\nRonde aktif: {start_round}\n\n⏳ *Waktu: 2 menit!* Silakan lanjut diskusi dan `/vote`!", 
-        parse_mode="Markdown"
-    )
+    pesan_dm = f"▶️ *GAME DILANJUTKAN!*\n\nLanjut dari *Ronde {start_round}*.\nAyo ke grup, diskusi dan ketik `/vote`!"
+    for pid in players.keys():
+        try:
+            await context.bot.send_message(int(pid), pesan_dm, reply_markup=btn_grup, parse_mode="Markdown")
+        except Exception:
+            pass
 
-    # Jalankan ulang timer dengan parameter start_round
+    await update.message.reply_text(f"▶️ *MELANJUTKAN GAME*\nGame ID: `{game_id}`\nRonde: *{start_round}*\n\n⏳ *Waktu: 2 menit!*", parse_mode="Markdown")
     asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context, start_round=start_round))
 
 # === SISTEM LIVE PHOTO ===
