@@ -1829,6 +1829,7 @@ def main():
     application.add_handler(CommandHandler('undercover', start_undercover))
     application.add_handler(CommandHandler('vote', submit_word))
     application.add_handler(CommandHandler('sus', sus_vote))
+    application.add_handler(CommandHandler("continue", continue_game))
     application.add_handler(CommandHandler('revealrole', reveal_role))
 
     # Tangkap klik Gabung / Mulai game
