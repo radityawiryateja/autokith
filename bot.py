@@ -541,6 +541,8 @@ def get_cancel_keyboard():
 
 
 async def start(update: Update, context: CallbackContext):
+    context.user_data.clear()
+    
     if update.effective_chat.type != "private":
         return
     user_id = update.effective_user.id
@@ -612,6 +614,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
     keyboard_state = context.user_data.get("keyboard_state")
 
     if update.message.text == "❌ Cancel":
+        context.user_data.clear()
         context.user_data.pop("keyboard_state", None)
         await update.message.reply_text("✅ Aksi dibatalkan. Kembali ke menu utama.", reply_markup=get_main_keyboard())
         return ConversationHandler.END
@@ -930,6 +933,8 @@ async def get_all_user_ids():
 
 
 async def menu(update: Update, context: CallbackContext):
+    context.user_data.clear()
+    
     if update.effective_chat.type != "private":
         return
     await update.message.reply_text("👋 *Navigasi Bot*\n\nSilakan pilih menu di bawah:", parse_mode="Markdown", reply_markup=get_main_keyboard())
