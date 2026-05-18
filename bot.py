@@ -521,11 +521,24 @@ async def set_required_channels(update: Update, context: CallbackContext):
     await update.message.reply_text(f"Daftar channel wajib diikuti telah diperbarui: {', '.join(required_channels)}")
 
 
-async def save_user(user_id, username):
+async def save_user(user_id, context: CallbackContext):
     try:
-        await db(lambda: supabase.table("users").upsert({"user_id": user_id, "username": username}, on_conflict=["user_id"]).execute())
-    except Exception:
-        pass
+        # Eksekusi simpan ke database
+        await db(lambda: supabase.table("users").upsert({"user_id": user_id}, on_conflict=["user_id"]).execute())
+        
+        # Jika berhasil, kirim log SUKSES ke grup admin
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=f"✅ *DB LOG:* Berhasil menyimpan/update user ID: `{user_id}` ke database Supabase.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        # Jika gagal, kirim log ERROR ke grup admin
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=f"⚠️ *DB ERROR:* Gagal menyimpan user ID: `{user_id}`!\n\n*Detail Error:*\n`{e}`",
+            parse_mode="Markdown"
+        )
 
 
 def get_main_keyboard():
@@ -550,7 +563,7 @@ async def start(update: Update, context: CallbackContext):
     if user_id in CACHE_BANNED_USERS:
         return await update.message.reply_text("❌ Akses kamu ke bot ini telah diblokir.")
 
-    await save_user(user_id, update.effective_user.username)
+    await save_user(user_id, context)
 
     if await check_subscription(user_id, context):
         await update.message.reply_text(
