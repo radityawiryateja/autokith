@@ -1793,7 +1793,7 @@ async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
     if res.data and res.data[0].get("chat_state") == "searching":
         await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
 
-        success_text = "🎉 Partner ditemukan (Admin)! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
+        success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
         # Gunakan context.bot.send_message karena tidak ada objek 'update' di sini
         await context.bot.send_message(chat_id=user_id, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
 
