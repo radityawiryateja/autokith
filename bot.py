@@ -1761,7 +1761,7 @@ async def search_anon(update: Update, context: CallbackContext):
         if p.get('age_group') != user_data.get('age_group'): continue
         a_gender, a_ori = user_data.get('gender'), user_data.get('orientation')
         b_gender, b_ori = p.get('gender'), p.get('orientation')
-        if (a_ori == 'straight' and b_ori == 'straight' and a_gender != b_gender) or (a_ori == 'queer' and b_ori == 'queer'):
+        if (a_gender != b_gender) or (a_ori == 'queer' and b_ori == 'queer'):
             matched_partner = p['user_id']
             matched_partner_data = p
             break
