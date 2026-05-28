@@ -545,6 +545,7 @@ def get_main_keyboard():
     keyboard = [
         [KeyboardButton("💬 Beli title"), KeyboardButton("💌 Menfess")],
         [KeyboardButton("👤 Profile"), KeyboardButton("📸 Photo live")],
+        [KeyboardButton("🎭 Set Profil Anon"), KeyboardButton("🔍 Cari Partner Anon")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
@@ -676,6 +677,66 @@ async def handle_pesan(update: Update, context: CallbackContext):
         await live_photo_handler(update, context)
         return ConversationHandler.END
 
+    if keyboard_state == "ANON_AGE":
+        if pesan_teks not in ["Legal (≥ 18)", "Minor (< 18)"]:
+            await update.message.reply_text("⚠️ Silakan gunakan tombol di bawah untuk memilih umur.")
+            return ConversationHandler.END
+            
+        context.user_data['anon_age'] = "legal" if "Legal" in pesan_teks else "minor"
+        context.user_data["keyboard_state"] = "ANON_GENDER"
+        
+        keyboard = [
+            [KeyboardButton("Male ♂️"), KeyboardButton("Female ♀️")],
+            [KeyboardButton("❌ Cancel")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text("2️⃣ Pilih gender kamu:", reply_markup=reply_markup)
+        return ConversationHandler.END
+
+    if keyboard_state == "ANON_GENDER":
+        if pesan_teks not in ["Male ♂️", "Female ♀️"]:
+            await update.message.reply_text("⚠️ Silakan gunakan tombol di bawah untuk memilih gender.")
+            return ConversationHandler.END
+            
+        context.user_data['anon_gen'] = "male" if "Male" in pesan_teks else "female"
+        context.user_data["keyboard_state"] = "ANON_ORI"
+        
+        keyboard = [
+            [KeyboardButton("Straight"), KeyboardButton("Queer")],
+            [KeyboardButton("❌ Cancel")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text("3️⃣ Pilih orientasi kamu:", reply_markup=reply_markup)
+        return ConversationHandler.END
+
+    if keyboard_state == "ANON_ORI":
+        if pesan_teks not in ["Straight", "Queer"]:
+            await update.message.reply_text("⚠️ Silakan gunakan tombol di bawah untuk memilih orientasi.")
+            return ConversationHandler.END
+            
+        ori = pesan_teks.lower()
+        age = context.user_data.get('anon_age')
+        gender = context.user_data.get('anon_gen')
+        user_id = update.effective_user.id
+        
+        # Simpan ke Supabase
+        await db(lambda: supabase.table("users").update({
+            "age_group": age, 
+            "gender": gender, 
+            "orientation": ori
+        }).eq("user_id", user_id).execute())
+        
+        # Bersihkan state agar bisa mengirim menfess lagi
+        context.user_data.pop("keyboard_state", None)
+        
+        # Mengembalikan keyboard utama
+        await update.message.reply_text(
+            f"✅ Profil tersimpan!\nUmur: `{age}`\nGender: `{gender}`\nOrientasi: `{ori}`\n\nKetik /search untuk mencari partner.", 
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard() 
+        )
+        return ConversationHandler.END
+
     if update.message.text == "👤 Profile":
         await cek_profile(update, context)
         return ConversationHandler.END
@@ -698,8 +759,22 @@ async def handle_pesan(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
 
-    if update.message.text == "💌 Menfess":
+if update.message.text == "💌 Menfess":
+        # Reset state di database kembali ke mode menfess
+        await db(lambda: supabase.table("users").update({
+            "chat_state": "menfess", 
+            "partner_id": None
+        }).eq("user_id", user_id).execute())
+        
         await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    if update.message.text == "🎭 Set Profil Anon":
+        await set_profile(update, context)
+        return ConversationHandler.END
+
+    if update.message.text == "🔍 Cari Partner Anon":
+        await search_anon(update, context)
         return ConversationHandler.END
 
     for bw in CACHE_BAD_WORDS:
@@ -1576,19 +1651,20 @@ async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Picu ulang task background timer
     asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context, start_round=start_round))
 
-async def set_profil(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if len(context.args) < 3:
-        return await update.message.reply_text("⚠️ Format: /setprofil <legal/minor> <L/P> <straight/queer>\nContoh: /setprofil legal L straight")
+async def set_profile(update: Update, context: CallbackContext):
+    context.user_data["keyboard_state"] = "ANON_AGE"
     
-    age_group, gender, orientation = context.args[0].lower(), context.args[1].upper(), context.args[2].lower()
-    await db(lambda: supabase.table("users").update({
-        "age_group": age_group, 
-        "gender": gender, 
-        "orientation": orientation
-    }).eq("user_id", user_id).execute())
+    keyboard = [
+        [KeyboardButton("Legal (≥ 18)"), KeyboardButton("Minor (< 18)")],
+        [KeyboardButton("❌ Cancel")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     
-    await update.message.reply_text("✅ Profil anonim disimpan! Ketik /search untuk mencari partner.")
+    await update.message.reply_text(
+        "👤 *SETUP PROFIL ANONIM*\n\n1️⃣ Pilih kategori umur kamu:", 
+        parse_mode="Markdown", 
+        reply_markup=reply_markup
+    )
 
 async def search_anon(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -1605,21 +1681,50 @@ async def search_anon(update: Update, context: CallbackContext):
     if user_data.get('chat_state') != 'menfess':
         return await update.message.reply_text("Kamu sedang dalam antrean atau obrolan. Ketik /stop untuk membatalkan.")
 
-    # Ubah state ke searching
-    await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
-    await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 10 menit)")
-
-    # (Logika pencarian 1-on-1 antar user bisa ditambahkan di sini)
+    # AMBIL SEMUA USER LAIN YANG LAGI SEARCHING
+    search_res = await db(lambda: supabase.table("users").select("user_id, age_group, gender, orientation").eq("chat_state", "searching").neq("user_id", user_id).execute())
+    potential_partners = search_res.data if hasattr(search_res, 'data') and search_res.data else []
     
-    # Jalankan timer 10 menit di background tanpa memblokir bot
-    asyncio.create_task(wait_for_admin_fallback(user_id, context))
+    matched_partner = None
+    for p in potential_partners:
+        # Syarat Mutlak 1: Umur harus sama (minor dgn minor, legal dgn legal)
+        if p.get('age_group') != user_data.get('age_group'):
+            continue
+            
+        a_gender, a_ori = user_data.get('gender'), user_data.get('orientation')
+        b_gender, b_ori = p.get('gender'), p.get('orientation')
+        
+        # Syarat Mutlak 2: Orientasi & Gender
+        if a_ori == 'straight' and b_ori == 'straight':
+            # Jika straight, male harus dengan female (dan sebaliknya)
+            if a_gender != b_gender: 
+                matched_partner = p['user_id']
+                break
+        elif a_ori == 'queer' and b_ori == 'queer':
+            # Jika queer, bisa dengan siapa saja (gender bebas) selama pasangannya juga queer
+            matched_partner = p['user_id']
+            break
+            
+    if matched_partner:
+        # Jika ketemu pasangan yang cocok!
+        await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": matched_partner}).eq("user_id", user_id).execute())
+        await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": user_id}).eq("user_id", matched_partner).execute())
+        
+        await update.message.reply_text("🎉 Partner ditemukan! Silakan mulai menyapa.")
+        await context.bot.send_message(chat_id=matched_partner, text="🎉 Partner ditemukan! Silakan mulai menyapa.")
+    else:
+        # Jika tidak ada yang cocok, masuk antrean
+        await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
+        await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 5 menit)")
+        # Jalankan timer fallback 5 menit (300 detik)
+        asyncio.create_task(wait_for_admin_fallback(user_id, context))
 
 async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
-    await asyncio.sleep(600) # Tunggu 10 Menit
+    await asyncio.sleep(300) # Diubah ke 5 Menit (300 detik)
     
     res = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
     if res.data and res.data[0].get("chat_state") == "searching":
-        # Fallback ke Grup Admin
+        # Fallback ke Grup Admin jika 5 menit tidak dapat pasangan
         await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
         await context.bot.send_message(chat_id=user_id, text="🎉 Partner ditemukan! Silakan mulai menyapa.")
 
@@ -2103,7 +2208,7 @@ def main():
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
 
     # --- Handler Fitur Anon Chat ---
-    application.add_handler(CommandHandler('setprofil', set_profil, filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler('setprofile', set_profile, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler('search', search_anon, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler('stop', stop_anon, filters.ChatType.PRIVATE))
 
