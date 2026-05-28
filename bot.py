@@ -598,6 +598,10 @@ async def handle_pesan(update: Update, context: CallbackContext):
     first_name = update.effective_user.first_name
     display_name = f"@{username}" if username else first_name
 
+    if update.message.text == "🛑 Stop Anon":
+        await stop_anon(update, context)
+        return ConversationHandler.END
+
     # --- CEGAT LOGIKA ANON CHAT DI SINI ---
     res = await db(lambda: supabase.table("users").select("chat_state, partner_id").eq("user_id", user_id).execute())
     user_state = res.data[0].get("chat_state") if res.data else "menfess"
@@ -776,10 +780,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
         }).eq("user_id", user_id).execute())
         
         await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
-        return ConversationHandler.END
-
-    if update.message.text == "🛑 Stop Anon":
-        await stop_anon(update, context)
         return ConversationHandler.END
 
     # --- FILTER BAD WORDS UNTUK MENFESS ---
