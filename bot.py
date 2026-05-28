@@ -869,15 +869,17 @@ async def handle_username(update: Update, context: CallbackContext):
         
     raw_input = update.message.text.strip()
     
-    # 2. Validasi Format
+    # 2. Validasi Format: 1 Kata, Tanpa Spasi, Hanya Karakter Legal
     if not re.match(r"^@?[a-zA-Z0-9_]+$", raw_input):
-        await update.message.reply_text("❌ Gagal! Username tidak boleh lebih dari 1 kata, tidak boleh ada spasi, atau karakter aneh.\n\nSilakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("❌ Gagal! Username tidak boleh lebih dari 1 kata, tidak boleh ada spasi, atau karakter aneh (contoh: jake).\n\nSilakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
         context.user_data.clear()
         return ConversationHandler.END
 
     target_username = raw_input.replace("@", "")
     teks_asli = context.user_data.get('teks_menfess', "")
-    original_entities = context.user_data.get('entities', [])
+    
+    # FIX: Ubah menjadi list agar bisa digabungkan dengan list [invisible_link]
+    original_entities = list(context.user_data.get('entities', []))
 
     final_text = teks_asli + "\u200B"
     offset = len(teks_asli.encode('utf-16-le')) // 2
@@ -887,7 +889,12 @@ async def handle_username(update: Update, context: CallbackContext):
 
     try:
         # Kirim ke Channel
-        message_sent = await context.bot.send_message(chat_id=CHANNEL_ID, text=final_text, entities=final_entities, link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True))
+        message_sent = await context.bot.send_message(
+            chat_id=CHANNEL_ID, 
+            text=final_text, 
+            entities=final_entities, 
+            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
+        )
         CACHE_COMSECT_OFF.add(message_sent.message_id)
         
         # Tambah Koin
