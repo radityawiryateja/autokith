@@ -609,13 +609,12 @@ async def handle_pesan(update: Update, context: CallbackContext):
             text=f"💬 #AnonFallback\nDari ID: `{user_id}`\n*(Reply pesan ini untuk membalas ke user)*",
             parse_mode="Markdown"
         )
-        
-        # 2. Kirim/copy pesan aslinya (entah itu teks, gambar, stiker, dll)
+        # 2. Kirim/copy pesan aslinya (teks, gambar, stiker, dll)
         await context.bot.copy_message(
             chat_id=ADMIN_GROUP_ID,
             from_chat_id=user_id,
             message_id=update.message.message_id,
-            reply_to_message_id=header_msg.message_id # Menempel pada pesan header
+            reply_to_message_id=header_msg.message_id
         )
         return ConversationHandler.END
         
@@ -624,6 +623,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         if partner_id:
             await context.bot.copy_message(chat_id=partner_id, from_chat_id=user_id, message_id=update.message.message_id)
         return ConversationHandler.END
+    # ----------------------------------------
 
     if user_id in CACHE_BANNED_USERS:
         await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
@@ -677,6 +677,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         await live_photo_handler(update, context)
         return ConversationHandler.END
 
+    # --- LOGIKA KEYBOARD STATE ANON PROFILE ---
     if keyboard_state == "ANON_AGE":
         if pesan_teks not in ["Legal (≥ 18)", "Minor (< 18)"]:
             await update.message.reply_text("⚠️ Silakan gunakan tombol di bawah untuk memilih umur.")
@@ -717,7 +718,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
         ori = pesan_teks.lower()
         age = context.user_data.get('anon_age')
         gender = context.user_data.get('anon_gen')
-        user_id = update.effective_user.id
         
         # Simpan ke Supabase
         await db(lambda: supabase.table("users").update({
@@ -737,6 +737,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
 
+    # --- LOGIKA TOMBOL MAIN KEYBOARD ---
     if update.message.text == "👤 Profile":
         await cek_profile(update, context)
         return ConversationHandler.END
@@ -759,7 +760,15 @@ async def handle_pesan(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
 
-if update.message.text == "💌 Menfess":
+    if update.message.text == "🎭 Set Profile Anon":
+        await set_profile(update, context)
+        return ConversationHandler.END
+
+    if update.message.text == "🔍 Cari Partner Anon":
+        await search_anon(update, context)
+        return ConversationHandler.END
+
+    if update.message.text == "💌 Menfess":
         # Reset state di database kembali ke mode menfess
         await db(lambda: supabase.table("users").update({
             "chat_state": "menfess", 
@@ -769,19 +778,13 @@ if update.message.text == "💌 Menfess":
         await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
-if update.message.text == "🎭 Set Profile Anon":
-        await set_profile(update, context)
-        return ConversationHandler.END
-
-if update.message.text == "🔍 Cari Partner Anon":
-        await search_anon(update, context)
-        return ConversationHandler.END
-
+    # --- FILTER BAD WORDS UNTUK MENFESS ---
     for bw in CACHE_BAD_WORDS:
         if re.search(rf'\b{re.escape(bw)}\b', pesan_teks_lower):
             await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
             return ConversationHandler.END
 
+    # --- PROSES MENFESS ---
     if MENFESS_MODE == "auto":
         if not update.message.text:
             await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
