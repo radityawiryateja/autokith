@@ -1740,69 +1740,61 @@ async def set_profile(update: Update, context: CallbackContext):
 
 async def search_anon(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    TOPIC_ID_ANON_LOG = 5417 
     
     res = await db(lambda: supabase.table("users").select("chat_state, age_group, gender, orientation").eq("user_id", user_id).execute())
     user_data = res.data[0] if res.data else None
     
-    if not user_data:
-        return await update.message.reply_text("Data belum tersimpan, ketik /start dulu ya.")
-        
+    if not user_data: return await update.message.reply_text("Data belum tersimpan, ketik /start dulu ya.")
     if not user_data.get('age_group') or not user_data.get('gender') or not user_data.get('orientation'):
         return await update.message.reply_text("Isi profil dulu yuk sebelum mencari partner menggunakan command /setprofil.")
-        
     if user_data.get('chat_state') != 'menfess':
         return await update.message.reply_text("Kamu sedang dalam antrean atau obrolan. Ketik /stop untuk membatalkan.")
 
-    # AMBIL SEMUA USER LAIN YANG LAGI SEARCHING
     search_res = await db(lambda: supabase.table("users").select("user_id, age_group, gender, orientation").eq("chat_state", "searching").neq("user_id", user_id).execute())
     potential_partners = search_res.data if hasattr(search_res, 'data') and search_res.data else []
     
     matched_partner = None
+    matched_partner_data = None
+    
     for p in potential_partners:
-        # Syarat Mutlak 1: Umur harus sama (minor dgn minor, legal dgn legal)
-        if p.get('age_group') != user_data.get('age_group'):
-            continue
-            
+        if p.get('age_group') != user_data.get('age_group'): continue
         a_gender, a_ori = user_data.get('gender'), user_data.get('orientation')
         b_gender, b_ori = p.get('gender'), p.get('orientation')
-        
-        # Syarat Mutlak 2: Orientasi & Gender
-        if a_ori == 'straight' and b_ori == 'straight':
-            # Jika straight, male harus dengan female (dan sebaliknya)
-            if a_gender != b_gender: 
-                matched_partner = p['user_id']
-                break
-        elif a_ori == 'queer' and b_ori == 'queer':
-            # Jika queer, bisa dengan siapa saja (gender bebas) selama pasangannya juga queer
+        if (a_ori == 'straight' and b_ori == 'straight' and a_gender != b_gender) or (a_ori == 'queer' and b_ori == 'queer'):
             matched_partner = p['user_id']
+            matched_partner_data = p
             break
             
     if matched_partner:
-        # Jika ketemu pasangan yang cocok!
         await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": matched_partner}).eq("user_id", user_id).execute())
         await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": user_id}).eq("user_id", matched_partner).execute())
         
-        # Teks baru dan sisipkan keyboard
+        # LOG KE TOPIC 5417
+        log_text = (f"🔍 *Anon Match Found*\n\n👤 User 1: `{user_id}` (G:{user_data.get('gender')}, O:{user_data.get('orientation')})\n👤 User 2: `{matched_partner}` (G:{matched_partner_data.get('gender')}, O:{matched_partner_data.get('orientation')})\n━━━━━━━━━━━━━━━━\nStatus: Berhasil terhubung")
+        try:
+            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, message_thread_id=TOPIC_ID_ANON_LOG, text=log_text, parse_mode="Markdown")
+        except:
+            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=log_text, parse_mode="Markdown")
+        
         success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
         await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
         await context.bot.send_message(chat_id=matched_partner, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
     else:
-        # Jika tidak ada yang cocok, masuk antrean
         await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
         await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 5 menit)")
-        # Jalankan timer fallback 5 menit (300 detik)
+        # Kirim context ke fallback agar bisa mengirim pesan ke user
         asyncio.create_task(wait_for_admin_fallback(user_id, context))
 
 async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
-    await asyncio.sleep(300) # Diubah ke 5 Menit (300 detik)
+    await asyncio.sleep(300) 
     
     res = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
     if res.data and res.data[0].get("chat_state") == "searching":
-        # Fallback ke Grup Admin jika 5 menit tidak dapat pasangan
         await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
 
-        success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
-        await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+        success_text = "🎉 Partner ditemukan (Admin)! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
+        # Gunakan context.bot.send_message karena tidak ada objek 'update' di sini
         await context.bot.send_message(chat_id=user_id, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
 
 async def stop_anon(update: Update, context: CallbackContext):
