@@ -1784,13 +1784,28 @@ async def stop_anon(update: Update, context: CallbackContext):
         
         if state in ["searching", "chatting", "chatting_admin"]:
             await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", user_id).execute())
-            await update.message.reply_text("🔴 Kamu telah meninggalkan obrolan. (Kembali ke mode menfess)")
+            
+            # Mengembalikan keyboard utama untuk user yang menekan tombol
+            await update.message.reply_text(
+                "🔴 Kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
+                reply_markup=get_main_keyboard()
+            )
             
             if state == "chatting_admin":
-                await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"🔴 Sesi #AnonFallback dengan ID `{user_id}` telah diakhiri oleh user.", parse_mode="Markdown")
+                await context.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID, 
+                    text=f"🔴 Sesi #AnonFallback dengan ID `{user_id}` telah diakhiri oleh user.", 
+                    parse_mode="Markdown"
+                )
             elif state == "chatting" and partner_id:
                 await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", partner_id).execute())
-                await context.bot.send_message(chat_id=partner_id, text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)")
+                
+                # Mengembalikan keyboard utama untuk partner
+                await context.bot.send_message(
+                    chat_id=partner_id, 
+                    text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
+                    reply_markup=get_main_keyboard()
+                )
 
 # === SISTEM LIVE PHOTO ===
 def _get_video_file_from_message(msg):
