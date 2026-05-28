@@ -589,9 +589,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
     if update.effective_chat.type != "private":
         return ConversationHandler.END
-    if not bot_active:
-        await update.message.reply_text("Bot sedang dipause oleh admin.")
-        return ConversationHandler.END
 
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -784,6 +781,29 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Menfess ditolak karena mengandung kata-kata yang dilarang oleh base.")
             return ConversationHandler.END
 
+    # --- CEK STATUS BOT (HANYA UNTUK MENFESS) ---
+    if not bot_active:
+        try:
+            # 1. Kirim notifikasi header ke admin
+            header_msg = await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=f"📥 *PESAN MASUK (BOT CLOSED)*\nDari: {display_name} (`{user_id}`)\n*(Pesan ini diteruskan langsung karena sesi menfess sedang ditutup)*",
+                parse_mode="Markdown"
+            )
+            # 2. Copy pesan aslinya ke admin (mendukung teks, stiker, media)
+            await context.bot.copy_message(
+                chat_id=ADMIN_GROUP_ID,
+                from_chat_id=user_id,
+                message_id=update.message.message_id,
+                reply_to_message_id=header_msg.message_id
+            )
+            await update.message.reply_text("⛔ Sesi menfess saat ini sedang ditutup. Pesanmu telah diteruskan langsung ke admin sebagai pesan biasa.")
+        except Exception as e:
+            logger.error(f"Gagal meneruskan pesan saat bot closed: {e}")
+            await update.message.reply_text("⛔ Sesi menfess saat ini sedang ditutup oleh admin.")
+            
+        return ConversationHandler.END
+
     # --- PROSES MENFESS ---
     if MENFESS_MODE == "auto":
         if not update.message.text:
@@ -834,7 +854,21 @@ async def handle_username(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     display_name = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
 
-    target_username = update.message.text.strip().replace("@", "")
+    # 1. Validasi Input Harus Berupa Teks (Tolak Stiker, Foto, GIF, dll)
+    if not update.message.text:
+        await update.message.reply_text("❌ Gagal! Username harus berupa teks biasa. Silakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+        
+    raw_input = update.message.text.strip()
+    
+    # 2. Validasi Format: 1 Kata, Tanpa Spasi, Hanya Karakter Legal Telegram
+    if not re.match(r"^@?[a-zA-Z0-9_]+$", raw_input):
+        await update.message.reply_text("❌ Gagal! Username tidak boleh lebih dari 1 kata, tidak boleh ada spasi, atau karakter aneh (contoh yang benar: jake atau @jake).\n\nSilakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    target_username = raw_input.replace("@", "")
     teks_asli = context.user_data.get('teks_menfess', "")
     original_entities = context.user_data.get('entities', [])
 
@@ -863,7 +897,7 @@ async def handle_username(update: Update, context: CallbackContext):
 
     except Exception as e:
         logger.error(f"Error direct forward: {e}")
-        await update.message.reply_text("❌ Terjadi kesalahan saat mengirim menfess.")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengirim menfess.", reply_markup=get_main_keyboard())
 
     context.user_data.clear()
     return ConversationHandler.END
