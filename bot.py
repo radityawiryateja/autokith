@@ -2211,6 +2211,63 @@ async def refresh_total_coin(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
+async def break_all_anon(update: Update, context: CallbackContext):
+    # Hanya bisa dijalankan di grup admin
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    status_msg = await update.message.reply_text("⏳ Sedang memutus sesi anonim dan me-reset data profil semua user...")
+
+    try:
+        # 1. Tarik user yang statusnya bukan 'menfess' (untuk dikirimi notif putus obrolan)
+        res_active = await db(lambda: supabase.table("users").select("user_id").neq("chat_state", "menfess").execute())
+        affected_users = [row["user_id"] for row in res_active.data] if res_active and hasattr(res_active, 'data') and res_active.data else []
+        
+        # 2. Reset status obrolan bagi mereka yang nyangkut di chatting/searching
+        if affected_users:
+            await db(lambda: supabase.table("users").update({
+                "chat_state": "menfess", 
+                "partner_id": None
+            }).neq("chat_state", "menfess").execute())
+        
+        # 3. WIPE OUT data profil (umur, gender, orientasi) UNTUK SEMUA USER
+        # Pakai filter neq("user_id", 0) sebagai trik Supabase untuk meng-update semua baris
+        await db(lambda: supabase.table("users").update({
+            "age_group": None,
+            "gender": None,
+            "orientation": None
+        }).neq("user_id", 0).execute())
+        
+        # 4. Kirim notifikasi putus obrolan HANYA ke user yang tadinya lagi chatting/searching
+        berhasil, gagal = 0, 0
+        for uid in affected_users:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="🔴 Sesi obrolan anonim dihentikan oleh admin. Data profil anonim juga telah di-reset untuk pembaruan sistem.\n\n(Kembali ke mode menfess. Silakan ketik /setprofile untuk mengisi ulang data kamu).",
+                    reply_markup=get_main_keyboard()
+                )
+                berhasil += 1
+            except Exception as e:
+                logger.error(f"Gagal kirim notif break_anon ke {uid}: {e}")
+                gagal += 1
+            
+            await asyncio.sleep(0.1)  # Jeda aman Telegram API
+        
+        # 5. Laporan akhir ke admin
+        await status_msg.edit_text(
+            f"✅ *Break Anon & Reset Profil Selesai!*\n\n"
+            f"👥 Sesi obrolan yang diputus: {len(affected_users)}\n"
+            f"🔄 Seluruh data profil anon user di database berhasil dikosongkan.\n\n"
+            f"✅ Notif terkirim: {berhasil}\n"
+            f"❌ Notif gagal: {gagal}",
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error di break_all_anon: {e}")
+        await status_msg.edit_text(f"❌ Terjadi kesalahan saat eksekusi: `{e}`", parse_mode="Markdown")
+
 
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
@@ -2302,6 +2359,7 @@ def main():
     application.add_handler(CommandHandler('unblock', unblock_user))
     application.add_handler(CommandHandler('auto', set_mode_auto))
     application.add_handler(CommandHandler('manual', set_mode_manual))
+    application.add_handler(CommandHandler('break_anon', break_all_anon))
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('menu', menu))
     application.add_handler(CommandHandler('open', open_bot))
