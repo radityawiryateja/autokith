@@ -1166,7 +1166,7 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 50 # Mengirim 50 pesan sekaligus secara paralel
+    batch_size = 20 # Mengirim 50 pesan sekaligus secara paralel
     
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast forward ke {total_users} user...*", parse_mode="Markdown")
     
@@ -1184,7 +1184,7 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sc += 1
         
         await status_msg.edit_text(f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-        await asyncio.sleep(1) # Jeda aman untuk Telegram API
+        await asyncio.sleep(1.5) # Jeda aman untuk Telegram API
 
     await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
