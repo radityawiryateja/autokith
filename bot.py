@@ -1132,41 +1132,43 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcastfw <link>")
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
-    if not match: return await update.message.reply_text("❌ Link tidak valid! Pastikan formatnya t.me/username_channel/angka")
+    if not match: return await update.message.reply_text("❌ Link tidak valid!")
     channel_username, message_id = match.groups()
     if channel_username == "c": return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
 
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database untuk dibroadcast.")
+    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
     sc, fc = 0, 0
-    failed_users = [] # List untuk menyimpan ID user yang gagal
+    failed_users = []
+    batch_size = 50 # Mengirim 50 pesan sekaligus secara paralel
     
-    status_msg = await update.message.reply_text(f"⏳ *Memulai proses broadcast forward ke {total_users} user...*\nMohon tunggu ya!", parse_mode="Markdown")
+    status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast forward ke {total_users} user...*", parse_mode="Markdown")
     
-    for i, user_id in enumerate(user_list, 1):
-        try:
-            await context.bot.forward_message(chat_id=user_id, from_chat_id=f"@{channel_username}", message_id=int(message_id))
-            sc += 1
-        except Exception: 
-            fc += 1
-            failed_users.append(str(user_id)) # Masukkan ID ke list jika gagal
-            
-        if i % 20 == 0:
-            try: await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({i}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-            except Exception: pass
-        await asyncio.sleep(0.05)
+    for i in range(0, total_users, batch_size):
+        batch = user_list[i : i + batch_size]
+        tasks = [context.bot.forward_message(chat_id=uid, from_chat_id=f"@{channel_username}", message_id=int(message_id)) for uid in batch]
         
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for idx, res in enumerate(results):
+            if isinstance(res, Exception):
+                fc += 1
+                failed_users.append(str(batch[idx]))
+            else:
+                sc += 1
+        
+        await status_msg.edit_text(f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        await asyncio.sleep(1) # Jeda aman untuk Telegram API
+
     await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
-    # Kirim file .txt jika ada user yang gagal
     if failed_users:
-        failed_text = "\n".join(failed_users)
         await context.bot.send_document(
             chat_id=update.effective_chat.id, 
-            document=failed_text.encode('utf-8'), # Langsung ubah ke bytes
-            filename="failed_broadcast_forward.txt", # Gunakan parameter filename
+            document="\n".join(failed_users).encode('utf-8'),
+            filename="failed_broadcast_forward.txt",
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima broadcast forward."
         )
 
@@ -1175,35 +1177,37 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = " ".join(context.args)
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database untuk dibroadcast.")
+    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
     sc, fc = 0, 0
-    failed_users = [] # List untuk menyimpan ID user yang gagal
+    failed_users = []
+    batch_size = 50
     
-    status_msg = await update.message.reply_text(f"⏳ *Memulai proses broadcast ke {total_users} user...*\nMohon tunggu ya!", parse_mode="Markdown")
+    status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast ke {total_users} user...*", parse_mode="Markdown")
     
-    for i, user_id in enumerate(user_list, 1):
-        try:
-            await context.bot.send_message(chat_id=user_id, text=message_text)
-            sc += 1
-        except Exception: 
-            fc += 1
-            failed_users.append(str(user_id)) # Masukkan ID ke list jika gagal
-            
-        if i % 20 == 0:
-            try: await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({i}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-            except Exception: pass
-        await asyncio.sleep(0.05)
+    for i in range(0, total_users, batch_size):
+        batch = user_list[i : i + batch_size]
+        tasks = [context.bot.send_message(chat_id=uid, text=message_text) for uid in batch]
         
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for idx, res in enumerate(results):
+            if isinstance(res, Exception):
+                fc += 1
+                failed_users.append(str(batch[idx]))
+            else:
+                sc += 1
+        
+        await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        await asyncio.sleep(1)
+
     await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
-    # Kirim file .txt jika ada user yang gagal
     if failed_users:
-        failed_text = "\n".join(failed_users)
         await context.bot.send_document(
             chat_id=update.effective_chat.id, 
-            document=failed_text.encode('utf-8'), # Langsung ubah ke bytes
-            filename="failed_broadcast.txt", # Gunakan parameter filename
+            document="\n".join(failed_users).encode('utf-8'),
+            filename="failed_broadcast.txt",
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima pesan broadcast."
         )
 
