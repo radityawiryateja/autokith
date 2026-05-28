@@ -861,7 +861,7 @@ async def handle_username(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     display_name = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
 
-    # 1. Validasi Input Harus Berupa Teks (Tolak Stiker, Foto, GIF, dll)
+    # 1. Validasi Input Harus Berupa Teks
     if not update.message.text:
         await update.message.reply_text("❌ Gagal! Username harus berupa teks biasa. Silakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
         context.user_data.clear()
@@ -869,9 +869,9 @@ async def handle_username(update: Update, context: CallbackContext):
         
     raw_input = update.message.text.strip()
     
-    # 2. Validasi Format: 1 Kata, Tanpa Spasi, Hanya Karakter Legal Telegram
+    # 2. Validasi Format
     if not re.match(r"^@?[a-zA-Z0-9_]+$", raw_input):
-        await update.message.reply_text("❌ Gagal! Username tidak boleh lebih dari 1 kata, tidak boleh ada spasi, atau karakter aneh (contoh yang benar: jake atau @jake).\n\nSilakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("❌ Gagal! Username tidak boleh lebih dari 1 kata, tidak boleh ada spasi, atau karakter aneh.\n\nSilakan kirim ulang pesan menfess kamu dari awal.", reply_markup=get_main_keyboard())
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -886,21 +886,38 @@ async def handle_username(update: Update, context: CallbackContext):
     final_entities = original_entities + [invisible_link]
 
     try:
+        # Kirim ke Channel
         message_sent = await context.bot.send_message(chat_id=CHANNEL_ID, text=final_text, entities=final_entities, link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True))
         CACHE_COMSECT_OFF.add(message_sent.message_id)
+        
+        # Tambah Koin
         new_balance = await add_kith_coins(user_id, 50)
-
         coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
-        keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
-        await update.message.reply_text(f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        
+        # Reply ke user
+        keyboard_user = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
+        await update.message.reply_text(f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard_user), parse_mode="Markdown")
 
+        # Simpan ke DB
         try:
             await db(lambda: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id}).execute())
         except Exception as e:
             logger.error(f"DB Error Auto: {e}")
 
+        # --- LOG DENGAN TOMBOL HAPUS & TEGUR ---
         log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
-        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]), parse_mode="Markdown")
+        
+        keyboard_log = [
+            [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")],
+            [InlineKeyboardButton("❌ Hapus & Tegur", callback_data=f"del_{user_id}_{message_sent.message_id}")]
+        ]
+        
+        await context.bot.send_message(
+            chat_id=LOG_GROUP_ID, 
+            text=log_msg, 
+            reply_markup=InlineKeyboardMarkup(keyboard_log), 
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
         logger.error(f"Error direct forward: {e}")
@@ -2083,6 +2100,23 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 pass
         await _safe_delete_message(status_msg)
 
+async def handle_del_menfess(update: Update, context: CallbackContext):
+    query = update.callback_query
+    data = query.data.split("_")
+    user_id = int(data[1])
+    post_id = int(data[2])
+
+    try:
+        await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=post_id)
+        await context.bot.send_message(
+            chat_id=user_id, 
+            text="❌ *Pesan kamu dihapus admin karena tidak sesuai ketentuan base. Silakan baca rules kembali.*", 
+            parse_mode="Markdown"
+        )
+        await query.edit_message_text(f"{query.message.text_markdown}\n\n✅ *Status: Dihapus & User ditegur.*", parse_mode="Markdown")
+        await query.answer("Berhasil!")
+    except Exception:
+        await query.answer("Gagal hapus!")
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID:
@@ -2271,6 +2305,7 @@ def main():
 
     # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review))
+    application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
