@@ -549,6 +549,9 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
+def get_stop_anon_keyboard():
+    keyboard = [[KeyboardButton("🛑 Stop Anon")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 def get_cancel_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("❌ Cancel")]], resize_keyboard=True, is_persistent=True)
@@ -773,6 +776,10 @@ async def handle_pesan(update: Update, context: CallbackContext):
         }).eq("user_id", user_id).execute())
         
         await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    if update.message.text == "🛑 Stop Anon":
+        await stop_anon(update, context)
         return ConversationHandler.END
 
     # --- FILTER BAD WORDS UNTUK MENFESS ---
@@ -1747,8 +1754,10 @@ async def search_anon(update: Update, context: CallbackContext):
         await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": matched_partner}).eq("user_id", user_id).execute())
         await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": user_id}).eq("user_id", matched_partner).execute())
         
-        await update.message.reply_text("🎉 Partner ditemukan! Silakan mulai menyapa.")
-        await context.bot.send_message(chat_id=matched_partner, text="🎉 Partner ditemukan! Silakan mulai menyapa.")
+        # Teks baru dan sisipkan keyboard
+        success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
+        await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+        await context.bot.send_message(chat_id=matched_partner, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
     else:
         # Jika tidak ada yang cocok, masuk antrean
         await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
