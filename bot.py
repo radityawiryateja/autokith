@@ -2109,21 +2109,31 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_del_menfess(update: Update, context: CallbackContext):
     query = update.callback_query
+    await query.answer() # Harus dipanggil pertama kali
+    
     data = query.data.split("_")
+    if len(data) < 3: return
+    
     user_id = int(data[1])
     post_id = int(data[2])
 
     try:
+        # Hapus dari channel
         await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=post_id)
+        
+        # Kirim DM teguran
         await context.bot.send_message(
             chat_id=user_id, 
             text="❌ *Pesan kamu dihapus admin karena tidak sesuai ketentuan base. Silakan baca rules kembali.*", 
             parse_mode="Markdown"
         )
+        
+        # Update log
         await query.edit_message_text(f"{query.message.text_markdown}\n\n✅ *Status: Dihapus & User ditegur.*", parse_mode="Markdown")
-        await query.answer("Berhasil!")
-    except Exception:
-        await query.answer("Gagal hapus!")
+        
+    except Exception as e:
+        logger.error(f"Gagal hapus menfess ID {post_id}: {e}")
+        await query.answer("Gagal! Pastikan bot admin di channel & pesan masih ada.", show_alert=True)
 
 async def settings(update: Update, context: CallbackContext):
     if update.effective_chat.id != ADMIN_GROUP_ID:
@@ -2311,8 +2321,9 @@ def main():
     application.add_handler(CommandHandler('cancel', cancel_menfess, filters.ChatType.PRIVATE))
 
     # Handler Grup (Admin & Diskusi)
-    application.add_handler(CallbackQueryHandler(handle_callback_review))
+    application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
     application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
+    
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
