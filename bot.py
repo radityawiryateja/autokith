@@ -707,19 +707,32 @@ async def handle_pesan(update: Update, context: CallbackContext):
         context.user_data["keyboard_state"] = "ANON_ORI"
         
         keyboard = [
-            [KeyboardButton("Straight"), KeyboardButton("Queer")],
+            [KeyboardButton("bxg"), KeyboardButton("bxb")],
+            [KeyboardButton("gxg"), KeyboardButton("nbxnb")],
             [KeyboardButton("❌ Cancel")]
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text("3️⃣ Pilih orientasi kamu:", reply_markup=reply_markup)
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(
+            "3️⃣ Pilih orientasi kamu (maksimal 3 filter).\n\n"
+            "*(Bisa tekan tombol di bawah, atau ketik manual jika lebih dari 1, contoh: bxg, bxb)*:", 
+            reply_markup=reply_markup
+        )
         return ConversationHandler.END
 
     if keyboard_state == "ANON_ORI":
-        if pesan_teks not in ["Straight", "Queer"]:
-            await update.message.reply_text("⚠️ Silakan gunakan tombol di bawah untuk memilih orientasi.")
+        valid_oris = ["bxg", "bxb", "gxg", "nbxnb"]
+        # Ambil filter yang diketik/diklik user
+        user_oris = [o for o in valid_oris if o in pesan_teks_lower]
+        
+        if not user_oris:
+            await update.message.reply_text("⚠️ Silakan pilih atau ketik orientasi yang valid (bxg, bxb, gxg, nbxnb).")
             return ConversationHandler.END
             
-        ori = pesan_teks.lower()
+        if len(user_oris) > 3:
+            await update.message.reply_text("⚠️ Maksimal 3 filter orientasi ya! Silakan ketik ulang.")
+            return ConversationHandler.END
+            
+        ori = ",".join(user_oris)
         age = context.user_data.get('anon_age')
         gender = context.user_data.get('anon_gen')
         
@@ -1759,9 +1772,26 @@ async def search_anon(update: Update, context: CallbackContext):
     
     for p in potential_partners:
         if p.get('age_group') != user_data.get('age_group'): continue
-        a_gender, a_ori = user_data.get('gender'), user_data.get('orientation')
-        b_gender, b_ori = p.get('gender'), p.get('orientation')
-        if (a_gender != b_gender) or (a_ori == 'queer' and b_ori == 'queer'):
+        
+        a_gender = user_data.get('gender')
+        a_oris = user_data.get('orientation', '').split(',')
+        
+        b_gender = p.get('gender')
+        b_oris = p.get('orientation', '').split(',')
+        
+        is_match = False
+        
+        # Logika kecocokan orientasi seksual
+        if a_gender == 'male' and b_gender == 'male':
+            if 'bxb' in a_oris and 'bxb' in b_oris: is_match = True
+        elif a_gender == 'female' and b_gender == 'female':
+            if 'gxg' in a_oris and 'gxg' in b_oris: is_match = True
+        elif (a_gender == 'male' and b_gender == 'female') or (a_gender == 'female' and b_gender == 'male'):
+            if 'bxg' in a_oris and 'bxg' in b_oris: is_match = True
+        else:
+            if 'nbxnb' in a_oris and 'nbxnb' in b_oris: is_match = True
+            
+        if is_match:
             matched_partner = p['user_id']
             matched_partner_data = p
             break
@@ -1782,20 +1812,20 @@ async def search_anon(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=matched_partner, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
     else:
         await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
-        await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 5 menit)")
+        await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 10 menit)")
         # Kirim context ke fallback agar bisa mengirim pesan ke user
-        asyncio.create_task(wait_for_admin_fallback(user_id, context))
+        asyncio.create_task(wait_for_partner_timeout(user_id, context))
 
-async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
-    await asyncio.sleep(300) 
+async def wait_for_partner_timeout(user_id: int, context: CallbackContext):
+    await asyncio.sleep(600)  # Menunggu selama 10 Menit
     
     res = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
     if res.data and res.data[0].get("chat_state") == "searching":
-        await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
+        # Kembalikan ke mode menfess
+        await db(lambda: supabase.table("users").update({"chat_state": "menfess"}).eq("user_id", user_id).execute())
 
-        success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
-        # Gunakan context.bot.send_message karena tidak ada objek 'update' di sini
-        await context.bot.send_message(chat_id=user_id, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+        fail_text = "Maaf yaa, ga ada partner yang sesuai dengan kriteria kamu saat ini. Coba cari lagi nanti ya!"
+        await context.bot.send_message(chat_id=user_id, text=fail_text, reply_markup=get_main_keyboard())
 
 async def stop_anon(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
