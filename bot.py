@@ -1747,7 +1747,7 @@ async def search_anon(update: Update, context: CallbackContext):
     
     if not user_data: return await update.message.reply_text("Data belum tersimpan, ketik /start dulu ya.")
     if not user_data.get('age_group') or not user_data.get('gender') or not user_data.get('orientation'):
-        return await update.message.reply_text("Isi profil dulu yuk sebelum mencari partner menggunakan command /setprofil.")
+        return await update.message.reply_text("Isi profil dulu yuk sebelum mencari partner menggunakan command /setprofile.")
     if user_data.get('chat_state') != 'menfess':
         return await update.message.reply_text("Kamu sedang dalam antrean atau obrolan. Ketik /stop untuk membatalkan.")
 
