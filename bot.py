@@ -1772,7 +1772,10 @@ async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
     if res.data and res.data[0].get("chat_state") == "searching":
         # Fallback ke Grup Admin jika 5 menit tidak dapat pasangan
         await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
-        await context.bot.send_message(chat_id=user_id, text="🎉 Partner ditemukan! Silakan mulai menyapa.")
+
+        success_text = "🎉 Partner ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
+        await update.message.reply_text(success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+        await context.bot.send_message(chat_id=user_id, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
 
 async def stop_anon(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
