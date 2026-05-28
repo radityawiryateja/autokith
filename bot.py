@@ -545,7 +545,7 @@ def get_main_keyboard():
     keyboard = [
         [KeyboardButton("💬 Beli title"), KeyboardButton("💌 Menfess")],
         [KeyboardButton("👤 Profile"), KeyboardButton("📸 Photo live")],
-        [KeyboardButton("🎭 Set Profil Anon"), KeyboardButton("🔍 Cari Partner Anon")]
+        [KeyboardButton("🎭 Set Profile Anon"), KeyboardButton("🔍 Cari Partner Anon")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
@@ -769,11 +769,11 @@ if update.message.text == "💌 Menfess":
         await update.message.reply_text("💌 *Kirim Menfess*\n\nSilakan ketik pesan menfess kamu sekarang!", parse_mode="Markdown", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
-    if update.message.text == "🎭 Set Profil Anon":
+if update.message.text == "🎭 Set Profile Anon":
         await set_profile(update, context)
         return ConversationHandler.END
 
-    if update.message.text == "🔍 Cari Partner Anon":
+if update.message.text == "🔍 Cari Partner Anon":
         await search_anon(update, context)
         return ConversationHandler.END
 
