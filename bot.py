@@ -597,6 +597,33 @@ async def handle_pesan(update: Update, context: CallbackContext):
     first_name = update.effective_user.first_name
     display_name = f"@{username}" if username else first_name
 
+    # --- CEGAT LOGIKA ANON CHAT DI SINI ---
+    res = await db(lambda: supabase.table("users").select("chat_state, partner_id").eq("user_id", user_id).execute())
+    user_state = res.data[0].get("chat_state") if res.data else "menfess"
+    
+    if user_state == "chatting_admin":
+        # 1. Kirim pesan pengenal (header) ke admin agar admin tahu ini dari siapa
+        header_msg = await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=f"💬 #AnonFallback\nDari ID: `{user_id}`\n*(Reply pesan ini untuk membalas ke user)*",
+            parse_mode="Markdown"
+        )
+        
+        # 2. Kirim/copy pesan aslinya (entah itu teks, gambar, stiker, dll)
+        await context.bot.copy_message(
+            chat_id=ADMIN_GROUP_ID,
+            from_chat_id=user_id,
+            message_id=update.message.message_id,
+            reply_to_message_id=header_msg.message_id # Menempel pada pesan header
+        )
+        return ConversationHandler.END
+        
+    elif user_state == "chatting":
+        partner_id = res.data[0].get("partner_id")
+        if partner_id:
+            await context.bot.copy_message(chat_id=partner_id, from_chat_id=user_id, message_id=update.message.message_id)
+        return ConversationHandler.END
+
     if user_id in CACHE_BANNED_USERS:
         await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
         return ConversationHandler.END
@@ -826,14 +853,33 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
     if update.effective_chat.id not in [ADMIN_GROUP_ID, LOG_GROUP_ID] or not update.message.reply_to_message:
         return
 
-    match = re.search(r"ID(?:\s*Pengguna)?:?\s*[`]*(\d+)", update.message.reply_to_message.text or update.message.reply_to_message.caption or "")
+    replied_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
+
+    # Ekstrak ID dari pesan yang di-reply (mendukung format ID Pengguna lama & format Dari ID AnonFallback)
+    match = re.search(r"(?:ID(?:\s*Pengguna)?|Dari\s*ID):?\s*[`]*(\d+)", replied_text, re.IGNORECASE)
     if not match:
         return
 
     user_id = int(match.group(1))
-    reply_text = update.message.text or update.message.caption
+    reply_text = update.message.text or update.message.caption or ""
 
-    if reply_text and reply_text.startswith("/"):
+    # --- LOGIKA KHUSUS #AnonFallback ---
+    if "#AnonFallback" in replied_text:
+        # Jika admin ingin memutus sesi anonim
+        if reply_text.strip() == "/stop_anon":
+            try:
+                await db(lambda: supabase.table("users").update({"chat_state": "menfess"}).eq("user_id", user_id).execute())
+                await context.bot.send_message(chat_id=user_id, text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)")
+                await update.message.reply_text(f"✅ Sesi obrolan anonim dengan ID `{user_id}` telah diakhiri oleh Admin.", parse_mode="Markdown")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Gagal mengakhiri sesi anonim: {e}")
+            return
+        
+        # Jika balasan admin bukan command, biarkan kode mengalir ke blok copy_message di bawah
+        # agar dikirim ke user seolah-olah dari partner aslinya.
+
+    # --- LOGIKA BALASAN COMMAND DARI DATABASE ---
+    if reply_text and reply_text.startswith("/") and reply_text.strip() != "/stop_anon":
         try:
             response = await db(lambda: supabase.table("commands").select("content").eq("name", reply_text.split()[0]).execute())
             if hasattr(response, 'data') and response.data:
@@ -848,9 +894,19 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
             pass
         return
 
+    # --- LOGIKA MENGIRIM BALASAN (TEKS/MEDIA) KE USER ---
     try:
-        await context.bot.copy_message(chat_id=user_id, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
-        notif = await update.message.reply_text("✅ Balasan telah dikirim ke user.")
+        # copy_message menjamin tidak ada tulisan "Forwarded from Admin"
+        await context.bot.copy_message(
+            chat_id=user_id, 
+            from_chat_id=update.effective_chat.id, 
+            message_id=update.message.message_id
+        )
+        
+        # Sesuaikan teks notifikasi agar admin tahu pesan masuk ke jalur mana
+        notif_text = "💬 Pesan anonim terkirim!" if "#AnonFallback" in replied_text else "✅ Balasan telah dikirim ke user."
+        notif = await update.message.reply_text(notif_text)
+        
         await asyncio.sleep(5)
         try:
             await notif.delete()
@@ -1520,6 +1576,71 @@ async def continue_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Picu ulang task background timer
     asyncio.create_task(run_game_timer(GROUP_ID_DISKUSI, game_id, thread_id, context, start_round=start_round))
 
+async def set_profil(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    if len(context.args) < 3:
+        return await update.message.reply_text("⚠️ Format: /setprofil <legal/minor> <L/P> <straight/queer>\nContoh: /setprofil legal L straight")
+    
+    age_group, gender, orientation = context.args[0].lower(), context.args[1].upper(), context.args[2].lower()
+    await db(lambda: supabase.table("users").update({
+        "age_group": age_group, 
+        "gender": gender, 
+        "orientation": orientation
+    }).eq("user_id", user_id).execute())
+    
+    await update.message.reply_text("✅ Profil anonim disimpan! Ketik /search untuk mencari partner.")
+
+async def search_anon(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    
+    res = await db(lambda: supabase.table("users").select("chat_state, age_group, gender, orientation").eq("user_id", user_id).execute())
+    user_data = res.data[0] if res.data else None
+    
+    if not user_data:
+        return await update.message.reply_text("Data belum tersimpan, ketik /start dulu ya.")
+        
+    if not user_data.get('age_group') or not user_data.get('gender') or not user_data.get('orientation'):
+        return await update.message.reply_text("Isi profil dulu yuk sebelum mencari partner menggunakan command /setprofil.")
+        
+    if user_data.get('chat_state') != 'menfess':
+        return await update.message.reply_text("Kamu sedang dalam antrean atau obrolan. Ketik /stop untuk membatalkan.")
+
+    # Ubah state ke searching
+    await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
+    await update.message.reply_text("🔍 Mencari partner yang cocok... (Maksimal tunggu 10 menit)")
+
+    # (Logika pencarian 1-on-1 antar user bisa ditambahkan di sini)
+    
+    # Jalankan timer 10 menit di background tanpa memblokir bot
+    asyncio.create_task(wait_for_admin_fallback(user_id, context))
+
+async def wait_for_admin_fallback(user_id: int, context: CallbackContext):
+    await asyncio.sleep(600) # Tunggu 10 Menit
+    
+    res = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
+    if res.data and res.data[0].get("chat_state") == "searching":
+        # Fallback ke Grup Admin
+        await db(lambda: supabase.table("users").update({"chat_state": "chatting_admin"}).eq("user_id", user_id).execute())
+        await context.bot.send_message(chat_id=user_id, text="🎉 Partner ditemukan! Silakan mulai menyapa.")
+
+async def stop_anon(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    res = await db(lambda: supabase.table("users").select("chat_state, partner_id").eq("user_id", user_id).execute())
+    
+    if res.data:
+        state = res.data[0].get("chat_state")
+        partner_id = res.data[0].get("partner_id")
+        
+        if state in ["searching", "chatting", "chatting_admin"]:
+            await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", user_id).execute())
+            await update.message.reply_text("🔴 Kamu telah meninggalkan obrolan. (Kembali ke mode menfess)")
+            
+            if state == "chatting_admin":
+                await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"🔴 Sesi #AnonFallback dengan ID `{user_id}` telah diakhiri oleh user.", parse_mode="Markdown")
+            elif state == "chatting" and partner_id:
+                await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", partner_id).execute())
+                await context.bot.send_message(chat_id=partner_id, text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)")
+
 # === SISTEM LIVE PHOTO ===
 def _get_video_file_from_message(msg):
     """Ambil video dari pesan langsung, dokumen video, animation/GIF, atau pesan yang di-reply."""
@@ -1980,6 +2101,11 @@ def main():
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
+
+    # --- Handler Fitur Anon Chat ---
+    application.add_handler(CommandHandler('setprofil', set_profil, filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler('search', search_anon, filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler('stop', stop_anon, filters.ChatType.PRIVATE))
 
     # Message handler untuk file, media dll (diluar conversation handler)
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.TEXT, handle_pesan))
