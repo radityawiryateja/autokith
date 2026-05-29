@@ -59,6 +59,8 @@ required_channels = []
 CACHE_BANNED_USERS = []
 CACHE_COMSECT_OFF = set()
 CACHE_BAD_WORDS = set()
+# === CACHE UNTUK ANONYMOUS COURT ===
+CORT_VOTES = {}
 
 
 # ==============================================================================
@@ -464,6 +466,17 @@ async def set_mode_manual(update: Update, context: CallbackContext):
         logger.error(f"Gagal simpan mode manual ke DB: {e}")
     await update.message.reply_text("⏸️ Mode menfess diubah ke *MANUAL*. Menfess akan masuk ke grup admin untuk direview.", parse_mode="Markdown")
 
+async def set_mode_cort(update: Update, context: CallbackContext):
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+    global MENFESS_MODE
+    MENFESS_MODE = "cort"
+    try:
+        await db(lambda: supabase.table("bot_settings").upsert({"key": "menfess_mode", "value": "cort"}).execute())
+    except Exception as e:
+        logger.error(f"Gagal simpan mode cort ke DB: {e}")
+    await update.message.reply_text("⚖️ Mode menfess diubah ke *CORT*. Semua pesan menfess akan langsung terkirim sebagai Anonymous Court.", parse_mode="Markdown")
+
 
 # === HASHTAG & SETTINGS LAINNYA ===
 async def add_hashtag(update: Update, context: CallbackContext):
@@ -825,7 +838,57 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     # --- PROSES MENFESS ---
-    if MENFESS_MODE == "auto":
+    if MENFESS_MODE == "cort":
+        if not update.message.text:
+            await update.message.reply_text("❌ Mode Anonymous Court hanya menerima teks cerita.")
+            return ConversationHandler.END
+
+        cerita = update.message.text
+        display_name = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+        text_channel = f"⚖️ *ANONYMOUS COURT* ⚖️\n\n📝 *Kasus:*\n_{cerita}_"
+        
+        keyboard = [
+            [InlineKeyboardButton("☠️ Bersalah (0)", callback_data="cort|guilty")],
+            [InlineKeyboardButton("😇 Tidak Bersalah (0)", callback_data="cort|innocent")],
+            [InlineKeyboardButton("🤡 Goblok (0)", callback_data="cort|fool")]
+        ]
+        
+        try:
+            msg = await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=text_channel,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+            
+            CORT_VOTES[msg.message_id] = {'guilty': set(), 'innocent': set(), 'fool': set()}
+            
+            try:
+                await db(lambda: supabase.table("menfess_map").insert({"post_id": msg.message_id, "sender_user_id": user_id}).execute())
+            except Exception as e:
+                logger.error(f"DB Error Cort Map: {e}")
+                
+            new_balance = await add_kith_coins(user_id, 50)
+            coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
+            
+            await update.message.reply_text(f"✅ Kasusmu berhasil diajukan ke pengadilan channel!{coin_msg}", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+
+            log_msg = f"📌 Log Menfess (CORT):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n💬 Kasus: {cerita}"
+            keyboard_log = [
+                [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")],
+                [InlineKeyboardButton("❌ Hapus & Tegur", callback_data=f"del_{user_id}_{msg.message_id}")]
+            ]
+            await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup(keyboard_log), parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Gagal kirim cort menfess: {e}")
+            await update.message.reply_text("❌ Gagal mengirim kasus ke channel.")
+            
+        context.user_data.clear()
+        return ConversationHandler.END
+        
+    # --- PROSES MENFESS ---
+    elif MENFESS_MODE == "auto":
         if not update.message.text:
             await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
             return ConversationHandler.END
@@ -1075,6 +1138,80 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pass
 
+async def handle_cort_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    msg_id = query.message.message_id
+    
+    data = query.data.split("|")
+    if len(data) < 2:
+        return
+        
+    choice = data[1] # guilty, innocent, fool
+    
+    # 1. BACA ANGKA TERAKHIR DARI TOMBOL
+    keyboard = query.message.reply_markup.inline_keyboard
+    text_guilty = keyboard[0][0].text
+    text_innocent = keyboard[1][0].text
+    text_fool = keyboard[2][0].text
+    
+    def get_count(text):
+        match = re.search(r'\((\d+)\)', text)
+        return int(match.group(1)) if match else 0
+        
+    count_guilty = get_count(text_guilty)
+    count_innocent = get_count(text_innocent)
+    count_fool = get_count(text_fool)
+    
+    # 2. LOGIKA ANTI-SPAM SEMENTARA
+    if msg_id not in CORT_VOTES:
+        CORT_VOTES[msg_id] = {'guilty': set(), 'innocent': set(), 'fool': set()}
+        
+    votes = CORT_VOTES[msg_id]
+    
+    if user_id in votes[choice]:
+        votes[choice].remove(user_id)
+        if choice == 'guilty': count_guilty -= 1
+        elif choice == 'innocent': count_innocent -= 1
+        elif choice == 'fool': count_fool -= 1
+        alert_text = "Tarik suara! ❌"
+    else:
+        if user_id in votes['guilty']:
+            votes['guilty'].remove(user_id)
+            count_guilty -= 1
+        if user_id in votes['innocent']:
+            votes['innocent'].remove(user_id)
+            count_innocent -= 1
+        if user_id in votes['fool']:
+            votes['fool'].remove(user_id)
+            count_fool -= 1
+            
+        votes[choice].add(user_id)
+        if choice == 'guilty': count_guilty += 1
+        elif choice == 'innocent': count_innocent += 1
+        elif choice == 'fool': count_fool += 1
+        alert_text = "Votemu tercatat! ⚖️"
+        
+    count_guilty = max(0, count_guilty)
+    count_innocent = max(0, count_innocent)
+    count_fool = max(0, count_fool)
+    
+    # 3. UPDATE TOMBOL
+    new_keyboard = [
+        [InlineKeyboardButton(f"☠️ Bersalah ({count_guilty})", callback_data="cort|guilty")],
+        [InlineKeyboardButton(f"😇 Tidak Bersalah ({count_innocent})", callback_data="cort|innocent")],
+        [InlineKeyboardButton(f"🤡 Goblok ({count_fool})", callback_data="cort|fool")]
+    ]
+    
+    try:
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
+        await query.answer(alert_text)
+    except Exception as e:
+        if "Message is not modified" in str(e):
+            await query.answer("Kamu sudah memilih ini! ⚖️")
+        else:
+            await query.answer("Gagal memproses vote.", show_alert=True)
+            logger.error(f"Error voting cort: {e}")
 
 async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -2389,6 +2526,7 @@ def main():
     application.add_handler(CommandHandler('unblock', unblock_user))
     application.add_handler(CommandHandler('auto', set_mode_auto))
     application.add_handler(CommandHandler('manual', set_mode_manual))
+    application.add_handler(CommandHandler('cortmode', set_mode_cort))
     application.add_handler(CommandHandler('break_anon', break_all_anon))
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('menu', menu))
@@ -2433,6 +2571,7 @@ def main():
     # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
     application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
+    application.add_handler(CallbackQueryHandler(handle_cort_callback, pattern="^cort\|"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
