@@ -850,10 +850,10 @@ async def handle_pesan(update: Update, context: CallbackContext):
         
         keyboard = [
             [
-                InlineKeyboardButton("☠️ Bersalah (0)", callback_data="cort|guilty"),
-                InlineKeyboardButton("😇 Tdk Bersalah (0)", callback_data="cort|innocent")
-            ],
-            [InlineKeyboardButton("🤡 Badut (0)", callback_data="cort|fool")]
+                InlineKeyboardButton("☠️ (0)", callback_data="cort|guilty"),
+                InlineKeyboardButton("😇 (0)", callback_data="cort|innocent"),
+                InlineKeyboardButton("🤡 (0)", callback_data="cort|fool")
+            ]
         ]
         
         try:
@@ -1167,10 +1167,10 @@ async def update_cort_message_bg(bot, chat_id, msg_id, vote_data):
         
         new_keyboard = [
             [
-                InlineKeyboardButton(f"☠️ Bersalah ({c_g})", callback_data="cort|guilty"),
-                InlineKeyboardButton(f"😇 Tdk Bersalah ({c_i})", callback_data="cort|innocent")
-            ],
-            [InlineKeyboardButton(f"🤡 Badut ({c_f})", callback_data="cort|fool")]
+                InlineKeyboardButton(f"☠️ ({c_g})", callback_data="cort|guilty"),
+                InlineKeyboardButton(f"😇 ({c_i})", callback_data="cort|innocent"),
+                InlineKeyboardButton(f"🤡 ({c_f})", callback_data="cort|fool")
+            ]
         ]
         
         # Kirim HANYA SATU KALI update ke Telegram
