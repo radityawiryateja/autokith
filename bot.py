@@ -2025,37 +2025,196 @@ async def wait_for_partner_timeout(user_id: int, context: CallbackContext):
 
 async def stop_anon(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    res = await db(lambda: supabase.table("users").select("chat_state, partner_id").eq("user_id", user_id).execute())
+    res = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
     
     if res.data:
         state = res.data[0].get("chat_state")
-        partner_id = res.data[0].get("partner_id")
         
+        # Cuma munculin konfirmasi kalau beneran lagi searching atau chatting
         if state in ["searching", "chatting", "chatting_admin"]:
-            await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", user_id).execute())
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Yes", callback_data="stop_anon_yes"),
+                    InlineKeyboardButton("❌ No", callback_data="stop_anon_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # Mengembalikan keyboard utama untuk user yang menekan tombol
             await update.message.reply_text(
-                "🔴 Kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
-                reply_markup=get_main_keyboard()
+                "⚠️ *Akhiri sesi dengan user ini?*", 
+                parse_mode="Markdown",
+                reply_markup=reply_markup
             )
+        else:
+            await update.message.reply_text("Kamu tidak sedang dalam sesi anonim.")
+
+async def handle_stop_anon_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = update.effective_user.id
+
+    if data == "stop_anon_no":
+        # Kalau mencet No, hapus aja pesan konfirmasinya dan biarkan chatting lanjut
+        try:
+            await query.delete_message()
+        except:
+            await query.edit_message_text("✅ Lanjut chatting!")
+        return
+
+    if data == "stop_anon_yes":
+        res = await db(lambda: supabase.table("users").select("chat_state, partner_id").eq("user_id", user_id).execute())
+        
+        if res.data:
+            state = res.data[0].get("chat_state")
+            partner_id = res.data[0].get("partner_id")
             
-            if state == "chatting_admin":
-                await context.bot.send_message(
-                    chat_id=ADMIN_GROUP_ID, 
-                    text=f"🔴 Sesi #AnonFallback dengan ID `{user_id}` telah diakhiri oleh user.", 
-                    parse_mode="Markdown"
-                )
-            elif state == "chatting" and partner_id:
-                await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", partner_id).execute())
+            if state in ["searching", "chatting", "chatting_admin"]:
+                # Putus sesi user ini
+                await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", user_id).execute())
                 
-                # Mengembalikan keyboard utama untuk partner
+                try:
+                    await query.delete_message()
+                except:
+                    pass
+                
+                # Mengembalikan keyboard utama untuk user yang menekan YES
                 await context.bot.send_message(
-                    chat_id=partner_id, 
-                    text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
+                    chat_id=user_id,
+                    text="🔴 Kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
                     reply_markup=get_main_keyboard()
                 )
+                
+                # Putus sesi partnernya (kalau ada)
+                if state == "chatting_admin":
+                    await context.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID, 
+                        text=f"🔴 Sesi #AnonFallback dengan ID `{user_id}` telah diakhiri oleh user.", 
+                        parse_mode="Markdown"
+                    )
+                elif state == "chatting" and partner_id:
+                    # Putus sesi partner
+                    await db(lambda: supabase.table("users").update({"chat_state": "menfess", "partner_id": None}).eq("user_id", partner_id).execute())
+                    
+                    # Mengembalikan keyboard utama untuk partner
+                    await context.bot.send_message(
+                        chat_id=partner_id, 
+                        text="🔴 Partner kamu telah meninggalkan obrolan. (Kembali ke mode menfess)", 
+                        reply_markup=get_main_keyboard()
+                    )
 
+async def randompair_massal(update: Update, context: CallbackContext):
+    # Cuma bisa dijalanin di grup admin
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    status_msg = await update.message.reply_text("⏳ Memulai mass random pair untuk user idle dengan profil lengkap...")
+
+    try:
+        # 1. Ambil semua user yang statusnya menfess
+        res = await db(lambda: supabase.table("users").select("*").eq("chat_state", "menfess").execute())
+        users = res.data if res and hasattr(res, 'data') else []
+
+        # Filter: Hanya user yang profil anon-nya (umur, gender, orientasi) tidak kosong
+        eligible_users = [u for u in users if u.get('age_group') and u.get('gender') and u.get('orientation')]
+
+        if not eligible_users:
+            return await status_msg.edit_text("⚠️ Tidak ada user dengan profil lengkap yang sedang idle (menfess).")
+
+        berhasil_blast = 0
+        
+        # 2. Ubah state mereka jadi searching & kirim notifikasi
+        for u in eligible_users:
+            user_id = u['user_id']
+            await db(lambda: supabase.table("users").update({"chat_state": "searching"}).eq("user_id", user_id).execute())
+
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🔍 *Base Closed - Sesi Anon Massal Dimulai!*\n\nMencari partner yang cocok... (Maksimal tunggu 10 menit)",
+                    parse_mode="Markdown"
+                )
+                # Jalankan timer 10 menit buat user ini
+                asyncio.create_task(wait_for_partner_timeout(user_id, context))
+                berhasil_blast += 1
+            except Exception as e:
+                logger.error(f"Gagal kirim notif mass search ke {user_id}: {e}")
+
+            await asyncio.sleep(0.1) # Hindari flood limit Telegram API
+
+        await status_msg.edit_text(f"✅ Berhasil mengubah {berhasil_blast} user menjadi searching!\n\n⏳ Memulai proses auto-matching massal di background...")
+
+        # 3. PROSES AUTO-MATCHING MASSAL
+        match_count = 0
+        for u in eligible_users:
+            user_id = u['user_id']
+            
+            # Cek dulu, siapa tau user ini udah ke-match di loop sebelumnya
+            cek = await db(lambda: supabase.table("users").select("chat_state").eq("user_id", user_id).execute())
+            if not cek.data or cek.data[0].get("chat_state") != "searching":
+                continue 
+
+            # Cari potensial partner yang statusnya searching
+            search_res = await db(lambda: supabase.table("users").select("*").eq("chat_state", "searching").neq("user_id", user_id).execute())
+            potential_partners = search_res.data if hasattr(search_res, 'data') and search_res.data else []
+
+            matched_partner = None
+            matched_partner_data = None
+
+            for p in potential_partners:
+                if p.get('age_group') != u.get('age_group'): continue
+
+                a_gender, a_oris = u.get('gender'), u.get('orientation', '').split(',')
+                b_gender, b_oris = p.get('gender'), p.get('orientation', '').split(',')
+                is_match = False
+
+                if a_gender == 'male' and b_gender == 'male':
+                    if 'bxb' in a_oris and 'bxb' in b_oris: is_match = True
+                elif a_gender == 'female' and b_gender == 'female':
+                    if 'gxg' in a_oris and 'gxg' in b_oris: is_match = True
+                elif (a_gender == 'male' and b_gender == 'female') or (a_gender == 'female' and b_gender == 'male'):
+                    if 'bxg' in a_oris and 'bxg' in b_oris: is_match = True
+                else:
+                    if 'nbxnb' in a_oris and 'nbxnb' in b_oris: is_match = True
+
+                if is_match:
+                    matched_partner = p['user_id']
+                    matched_partner_data = p
+                    break
+
+            # Jika ketemu jodohnya, pasangkan mereka berdua
+            if matched_partner:
+                await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": matched_partner}).eq("user_id", user_id).execute())
+                await db(lambda: supabase.table("users").update({"chat_state": "chatting", "partner_id": user_id}).eq("user_id", matched_partner).execute())
+                
+                match_count += 1
+                success_text = "🎉 Partner massal ditemukan! Silakan mulai menyapa.\n\n*(Ketik /stop atau tekan tombol di bawah untuk mengakhiri obrolan dan kembali ke mode menfess)*"
+
+                try:
+                    # Kirim notif ke kedua belah pihak
+                    await context.bot.send_message(chat_id=user_id, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+                    await context.bot.send_message(chat_id=matched_partner, text=success_text, parse_mode="Markdown", reply_markup=get_stop_anon_keyboard())
+
+                    # Log ke Topik 5417 Admin
+                    log_text = (f"🔍 *Mass Anon Match Found*\n\n👤 User 1: `{user_id}` (G:{u.get('gender')}, O:{u.get('orientation')})\n👤 User 2: `{matched_partner}` (G:{matched_partner_data.get('gender')}, O:{matched_partner_data.get('orientation')})\n━━━━━━━━━━━━━━━━\nStatus: Berhasil terhubung via /randompair")
+                    try:
+                        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, message_thread_id=5417, text=log_text, parse_mode="Markdown")
+                    except:
+                        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=log_text, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Gagal kirim notif success match: {e}")
+
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID, 
+            text=f"🏁 *Mass Random Pair Selesai!*\n\nBerhasil mencocokkan: *{match_count} pasangan*. Sisa user yang belum nemu pasangan akan masuk antrean timeout 10 menit.", 
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error(f"Error di randompair_massal: {e}")
+        await status_msg.edit_text(f"❌ Terjadi kesalahan saat eksekusi: `{e}`", parse_mode="Markdown")
+    
 # === SISTEM LIVE PHOTO ===
 def _get_video_file_from_message(msg):
     """Ambil video dari pesan langsung, dokumen video, animation/GIF, atau pesan yang di-reply."""
@@ -2601,6 +2760,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
     application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
     application.add_handler(CallbackQueryHandler(handle_cort_callback, pattern="^cort\|"))
+    application.add_handler(CallbackQueryHandler(handle_stop_anon_callback, pattern="^stop_anon_"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
@@ -2610,6 +2770,7 @@ def main():
     application.add_handler(CommandHandler('setprofile', set_profile, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler('search', search_anon, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler('stop', stop_anon, filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler('randompair', randompair_massal))
 
     # Message handler untuk file, media dll (diluar conversation handler)
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.TEXT, handle_pesan))
