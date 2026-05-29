@@ -1166,20 +1166,26 @@ async def menu(update: Update, context: CallbackContext):
 
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcastfw <link>")
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: 
+        return await update.message.reply_text("Format: /broadcastfw <link>")
+    
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
-    if not match: return await update.message.reply_text("❌ Link tidak valid!")
+    if not match: 
+        return await update.message.reply_text("❌ Link tidak valid!")
+    
     channel_username, message_id = match.groups()
-    if channel_username == "c": return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
+    if channel_username == "c": 
+        return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
 
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database.")
+    if total_users == 0: 
+        return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 20 # Mengirim 50 pesan sekaligus secara paralel
+    batch_size = 20 # 20 sudah cukup aman
     
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast forward ke {total_users} user...*", parse_mode="Markdown")
     
@@ -1196,10 +1202,20 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 sc += 1
         
-        await status_msg.edit_text(f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        # PERBAIKAN: Update status setiap 4 batch saja (setiap 80 user) agar tidak kena limit
+        if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
+            try:
+                await status_msg.edit_text(f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+            except Exception as e:
+                logging.warning(f"Gagal edit status broadcastfw: {e}") # Abaikan jika gagal edit, yang penting loop jalan terus
+
         await asyncio.sleep(1.5) # Jeda aman untuk Telegram API
 
-    await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+    # PERBAIKAN: Try-except untuk status final
+    try:
+        await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
         await context.bot.send_document(
@@ -1210,15 +1226,19 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: return await update.message.reply_text("Format: /broadcast <teks>")
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: 
+        return await update.message.reply_text("Format: /broadcast <teks>")
+    
     message_text = " ".join(context.args)
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: return await update.message.reply_text("⚠️ Tidak ada user di database.")
+    if total_users == 0: 
+        return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 50
+    # Disamakan menjadi 20 agar setara dengan broadcastfw
+    batch_size = 20 
     
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast ke {total_users} user...*", parse_mode="Markdown")
     
@@ -1235,10 +1255,20 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 sc += 1
         
-        await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-        await asyncio.sleep(1)
+        # Update status setiap 4 batch (setiap 80 user)
+        if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
+            try:
+                await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+            except Exception as e:
+                logging.warning(f"Gagal edit status broadcast: {e}") # Loop tetap aman berjalan
 
-    await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        await asyncio.sleep(1.5) # Jeda aman untuk Telegram API
+
+    # Try-except untuk status final
+    try:
+        await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
         await context.bot.send_document(
