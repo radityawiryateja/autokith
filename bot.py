@@ -2716,6 +2716,7 @@ def main():
     application.add_handler(CommandHandler('manual', set_mode_manual))
     application.add_handler(CommandHandler('cortmode', set_mode_cort))
     application.add_handler(CommandHandler('break_anon', break_all_anon))
+    application.add_handler(CommandHandler('randompair', randompair_massal))
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('menu', menu))
     application.add_handler(CommandHandler('open', open_bot))
