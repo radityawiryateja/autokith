@@ -850,7 +850,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         keyboard = [
             [InlineKeyboardButton("☠️ Bersalah (0)", callback_data="cort|guilty")],
             [InlineKeyboardButton("😇 Tidak Bersalah (0)", callback_data="cort|innocent")],
-            [InlineKeyboardButton("🤡 Goblok (0)", callback_data="cort|fool")]
+            [InlineKeyboardButton("🤡 Badut (0)", callback_data="cort|fool")]
         ]
         
         try:
@@ -1200,7 +1200,7 @@ async def handle_cort_callback(update: Update, context: CallbackContext):
     new_keyboard = [
         [InlineKeyboardButton(f"☠️ Bersalah ({count_guilty})", callback_data="cort|guilty")],
         [InlineKeyboardButton(f"😇 Tidak Bersalah ({count_innocent})", callback_data="cort|innocent")],
-        [InlineKeyboardButton(f"🤡 Goblok ({count_fool})", callback_data="cort|fool")]
+        [InlineKeyboardButton(f"🤡 Badut ({count_fool})", callback_data="cort|fool")]
     ]
     
     try:
