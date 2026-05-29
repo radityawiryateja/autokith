@@ -838,6 +838,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     # --- PROSES MENFESS ---
+    # --- PROSES MENFESS ---
     if MENFESS_MODE == "cort":
         if not update.message.text:
             await update.message.reply_text("❌ Mode Anonymous Court hanya menerima teks cerita.")
@@ -848,8 +849,10 @@ async def handle_pesan(update: Update, context: CallbackContext):
         text_channel = f"⚖️ *ANONYMOUS COURT* ⚖️\n\n📝 *Kasus:*\n_{cerita}_"
         
         keyboard = [
-            [InlineKeyboardButton("☠️ Bersalah (0)", callback_data="cort|guilty")],
-            [InlineKeyboardButton("😇 Tidak Bersalah (0)", callback_data="cort|innocent")],
+            [
+                InlineKeyboardButton("☠️ Bersalah (0)", callback_data="cort|guilty"),
+                InlineKeyboardButton("😇 Tdk Bersalah (0)", callback_data="cort|innocent")
+            ],
             [InlineKeyboardButton("🤡 Badut (0)", callback_data="cort|fool")]
         ]
         
@@ -861,7 +864,11 @@ async def handle_pesan(update: Update, context: CallbackContext):
                 parse_mode="Markdown"
             )
             
-            CORT_VOTES[msg.message_id] = {'guilty': set(), 'innocent': set(), 'fool': set()}
+            CORT_VOTES[msg.message_id] = {
+                'users': {}, 
+                'counts': {'guilty': 0, 'innocent': 0, 'fool': 0},
+                'task_running': False
+            }
             
             try:
                 await db(lambda: supabase.table("menfess_map").insert({"post_id": msg.message_id, "sender_user_id": user_id}).execute())
@@ -871,7 +878,13 @@ async def handle_pesan(update: Update, context: CallbackContext):
             new_balance = await add_kith_coins(user_id, 50)
             coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
             
-            await update.message.reply_text(f"✅ Kasusmu berhasil diajukan ke pengadilan channel!{coin_msg}", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+            # --- TAMBAHAN TOMBOL INLINE MENUJU PESAN CHANNEL ---
+            keyboard_user = [[InlineKeyboardButton("⚖️ Lihat Kasus Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")]]
+            await update.message.reply_text(
+                f"✅ Kasusmu berhasil diajukan ke pengadilan channel!{coin_msg}", 
+                reply_markup=InlineKeyboardMarkup(keyboard_user), 
+                parse_mode="Markdown"
+            )
 
             log_msg = f"📌 Log Menfess (CORT):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n💬 Kasus: {cerita}"
             keyboard_log = [
@@ -1138,10 +1151,46 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pass
 
+async def update_cort_message_bg(bot, chat_id, msg_id, vote_data):
+    """
+    Fungsi Kurir (Background Task): Bertugas mengupdate tombol Telegram
+    setelah menunggu beberapa detik untuk mengumpulkan vote.
+    """
+    # Tunda selama 3 detik. Semua klik member selama 3 detik ini akan digabung.
+    # Kamu bisa ubah angkanya jadi 5 atau 10 sesuai keinginanmu.
+    await asyncio.sleep(3) 
+    
+    try:
+        c_g = vote_data['counts']['guilty']
+        c_i = vote_data['counts']['innocent']
+        c_f = vote_data['counts']['fool']
+        
+        new_keyboard = [
+            [
+                InlineKeyboardButton(f"☠️ Bersalah ({c_g})", callback_data="cort|guilty"),
+                InlineKeyboardButton(f"😇 Tdk Bersalah ({c_i})", callback_data="cort|innocent")
+            ],
+            [InlineKeyboardButton(f"🤡 Badut ({c_f})", callback_data="cort|fool")]
+        ]
+        
+        # Kirim HANYA SATU KALI update ke Telegram
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=InlineKeyboardMarkup(new_keyboard)
+        )
+    except Exception as e:
+        # Abaikan pesan error jika kebetulan angkanya sama persis (Message is not modified)
+        pass 
+    finally:
+        vote_data['task_running'] = False
+
+
 async def handle_cort_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = update.effective_user.id
     msg_id = query.message.message_id
+    chat_id = query.message.chat_id
     
     data = query.data.split("|")
     if len(data) < 2:
@@ -1149,69 +1198,49 @@ async def handle_cort_callback(update: Update, context: CallbackContext):
         
     choice = data[1] # guilty, innocent, fool
     
-    # 1. BACA ANGKA TERAKHIR DARI TOMBOL
-    keyboard = query.message.reply_markup.inline_keyboard
-    text_guilty = keyboard[0][0].text
-    text_innocent = keyboard[1][0].text
-    text_fool = keyboard[2][0].text
+    # 1. JAWAB INSTAN (Hentikan loading di HP user tanpa nunggu update tombol)
+    await query.answer("Memproses vote... ⚖️")
     
-    def get_count(text):
-        match = re.search(r'\((\d+)\)', text)
-        return int(match.group(1)) if match else 0
-        
-    count_guilty = get_count(text_guilty)
-    count_innocent = get_count(text_innocent)
-    count_fool = get_count(text_fool)
-    
-    # 2. LOGIKA ANTI-SPAM SEMENTARA
+    # 2. INISIALISASI MEMORI (Jika bot baru restart)
     if msg_id not in CORT_VOTES:
-        CORT_VOTES[msg_id] = {'guilty': set(), 'innocent': set(), 'fool': set()}
-        
-    votes = CORT_VOTES[msg_id]
-    
-    if user_id in votes[choice]:
-        votes[choice].remove(user_id)
-        if choice == 'guilty': count_guilty -= 1
-        elif choice == 'innocent': count_innocent -= 1
-        elif choice == 'fool': count_fool -= 1
-        alert_text = "Tarik suara! ❌"
-    else:
-        if user_id in votes['guilty']:
-            votes['guilty'].remove(user_id)
-            count_guilty -= 1
-        if user_id in votes['innocent']:
-            votes['innocent'].remove(user_id)
-            count_innocent -= 1
-        if user_id in votes['fool']:
-            votes['fool'].remove(user_id)
-            count_fool -= 1
+        keyboard = query.message.reply_markup.inline_keyboard
+        def get_count(text):
+            match = re.search(r'\((\d+)\)', text)
+            return int(match.group(1)) if match else 0
             
-        votes[choice].add(user_id)
-        if choice == 'guilty': count_guilty += 1
-        elif choice == 'innocent': count_innocent += 1
-        elif choice == 'fool': count_fool += 1
-        alert_text = "Votemu tercatat! ⚖️"
+        CORT_VOTES[msg_id] = {
+            'users': {}, # Menyimpan siapa vote apa -> {user_id: 'guilty'}
+            'counts': {
+                'guilty': get_count(keyboard[0][0].text),
+                'innocent': get_count(keyboard[1][0].text),
+                'fool': get_count(keyboard[2][0].text)
+            },
+            'task_running': False # Gembok agar tidak menjalankan banyak proses bersamaan
+        }
         
-    count_guilty = max(0, count_guilty)
-    count_innocent = max(0, count_innocent)
-    count_fool = max(0, count_fool)
+    vote_data = CORT_VOTES[msg_id]
     
-    # 3. UPDATE TOMBOL
-    new_keyboard = [
-        [InlineKeyboardButton(f"☠️ Bersalah ({count_guilty})", callback_data="cort|guilty")],
-        [InlineKeyboardButton(f"😇 Tidak Bersalah ({count_innocent})", callback_data="cort|innocent")],
-        [InlineKeyboardButton(f"🤡 Badut ({count_fool})", callback_data="cort|fool")]
-    ]
+    # 3. KALKULASI DI DALAM MEMORI BOT SAJA (Super Cepat)
+    previous_choice = vote_data['users'].get(user_id)
     
-    try:
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
-        await query.answer(alert_text)
-    except Exception as e:
-        if "Message is not modified" in str(e):
-            await query.answer("Kamu sudah memilih ini! ⚖️")
-        else:
-            await query.answer("Gagal memproses vote.", show_alert=True)
-            logger.error(f"Error voting cort: {e}")
+    if previous_choice == choice:
+        # User klik tombol yang sama = Tarik vote (Unvote)
+        del vote_data['users'][user_id]
+        vote_data['counts'][choice] = max(0, vote_data['counts'][choice] - 1)
+    else:
+        # User pindah vote (Hapus vote yang lama jika ada)
+        if previous_choice:
+            vote_data['counts'][previous_choice] = max(0, vote_data['counts'][previous_choice] - 1)
+        
+        # Masukkan vote ke pilihan baru
+        vote_data['users'][user_id] = choice
+        vote_data['counts'][choice] += 1
+        
+    # 4. SURUH KURIR JALAN DI LATAR BELAKANG (Biar bot gak ngelag)
+    if not vote_data['task_running']:
+        vote_data['task_running'] = True
+        # Jalankan secara asynchronous tanpa menyuruh bot berhenti menunggu (await)
+        asyncio.create_task(update_cort_message_bg(context.bot, chat_id, msg_id, vote_data))
 
 async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
