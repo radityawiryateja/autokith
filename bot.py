@@ -61,6 +61,8 @@ CACHE_COMSECT_OFF = set()
 CACHE_BAD_WORDS = set()
 # === CACHE UNTUK ANONYMOUS COURT ===
 CORT_VOTES = {}
+# === CACHE UNTUK PESAN BOARDREP ===
+BOARDREP_CACHE = {}
 
 
 # ==============================================================================
