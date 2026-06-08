@@ -2623,6 +2623,81 @@ async def break_all_anon(update: Update, context: CallbackContext):
         logger.error(f"Error di break_all_anon: {e}")
         await status_msg.edit_text(f"❌ Terjadi kesalahan saat eksekusi: `{e}`", parse_mode="Markdown")
 
+async def boardrep_cmd(update: Update, context: CallbackContext):
+    # Batasi agar hanya admin yang bisa pakai command ini (opsional, sesuaikan kebutuhan)
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    if not context.args:
+        return await update.message.reply_text("⚠️ Format salah!\nGunakan: `/boardrep <isi pesan tersembunyi>`", parse_mode="Markdown")
+
+    # Gabungkan semua kata setelah command menjadi satu teks
+    hidden_text = " ".join(context.args)
+    
+    # Buat ID unik singkat untuk pesan ini
+    unique_id = str(uuid.uuid4())[:8] 
+    
+    # Simpan pesan ke memori sementara
+    BOARDREP_CACHE[unique_id] = hidden_text
+
+    # Buat tombol inline
+    keyboard = [[InlineKeyboardButton("📩 Buka Pesan", callback_data=f"brep|{unique_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Catatan: Gunakan variabel CHANNEL_ID atau ganti dengan ID channel sicepat spesifik kamu
+    target_channel = CHANNEL_ID 
+    
+    try:
+        await context.bot.send_message(
+            chat_id=target_channel,
+            text="🔒 *Ada pesan rahasia yang disembunyikan!*\n\nSiapa cepat dia dapat. Klik tombol di bawah untuk membuka!",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text("✅ Pesan boardrep berhasil dikirim ke channel!")
+    except Exception as e:
+        logger.error(f"Gagal mengirim boardrep: {e}")
+        await update.message.reply_text("❌ Gagal mengirim pesan ke channel.")
+
+async def handle_boardrep_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    data = query.data.split("|")
+
+    if len(data) < 2: 
+        return
+
+    unique_id = data[1]
+
+    # Eksekusi Atomik: Tarik data dan langsung hapus dari dictionary dalam 1 langkah.
+    # Orang pertama yang sampai di baris ini akan mendapatkan teksnya.
+    # Orang kedua yang sampai di baris ini pada milidetik berikutnya akan mendapatkan 'None'.
+    hidden_text = BOARDREP_CACHE.pop(unique_id, None)
+
+    # Jika hasilnya None, berarti sudah diambil orang lain yang lebih cepat
+    if not hidden_text:
+        return await query.answer("❌ Terlambat! Pesan ini sudah dibuka oleh orang lain.", show_alert=True)
+
+    # Jika berhasil dapat teksnya, catat siapa pemenangnya
+    clicker_name = update.effective_user.first_name
+    
+    # Format pesan yang akan menimpa pesan lama di channel
+    new_text = f"🔓 *PESAN TERBUKA*\n\nDibuka pertama kali oleh: *{clicker_name}*\n\n📝 *Isi Pesan:*\n{hidden_text}"
+
+    try:
+        # Edit pesan di channel dan hilangkan tombol
+        await query.edit_message_text(
+            text=new_text,
+            parse_mode="Markdown",
+            reply_markup=None 
+        )
+        await query.answer("✅ Kamu adalah orang pertama yang membuka pesan ini!", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Gagal edit pesan boardrep: {e}")
+        # Jika gagal mengedit pesan (misal limit dari API Telegram), 
+        # pesan kita kembalikan ke cache agar bisa ditekan ulang.
+        BOARDREP_CACHE[unique_id] = hidden_text
+        await query.answer("❌ Terjadi kesalahan jaringan, silakan coba tekan lagi.", show_alert=True)
 
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
@@ -2729,6 +2804,7 @@ def main():
     # Fitur Profil & Leaderboard
     application.add_handler(CommandHandler('profile', cek_profile))
     application.add_handler(CommandHandler(['leaderboard', 'leadboard'], leaderboard))  # Sengaja support typo
+    application.add_handler(CommandHandler('boardrep', boardrep_cmd))
 
     # Fitur Game
     application.add_handler(CommandHandler('adducword', add_uc_word))
@@ -2762,6 +2838,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
     application.add_handler(CallbackQueryHandler(handle_cort_callback, pattern="^cort\|"))
     application.add_handler(CallbackQueryHandler(handle_stop_anon_callback, pattern="^stop_anon_"))
+    application.add_handler(CallbackQueryHandler(handle_boardrep_callback, pattern="^brep\|"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
