@@ -59,10 +59,12 @@ required_channels = []
 CACHE_BANNED_USERS = []
 CACHE_COMSECT_OFF = set()
 CACHE_BAD_WORDS = set()
-# === CACHE UNTUK ANONYMOUS COURT ===
 CORT_VOTES = {}
-# === CACHE UNTUK PESAN BOARDREP ===
 BOARDREP_CACHE = {}
+BOARDREP_CACHE = {}
+POLL_LOG_GROUP_ID = int(os.environ.get('POLL_LOG_GROUP_ID', LOG_GROUP_ID))
+POLL_DB = {}
+POLL_ANON, POLL_BTN_TEXT = range(20, 22)
 
 
 # ==============================================================================
@@ -77,14 +79,25 @@ async def db(fn):
 # === CACHE LOADERS ===
 
 async def update_settings_cache():
-    global MENFESS_MODE, bot_active
+    global MENFESS_MODE, bot_active, POLL_DB
     try:
         response = await db(lambda: supabase.table("bot_settings").select("key, value").execute())
         if hasattr(response, 'data') and response.data:
             settings = {row["key"]: row["value"] for row in response.data}
             MENFESS_MODE = settings.get("menfess_mode", "auto")
-            # FIX: bot_active sekarang diambil dari DB agar persist antar restart
             bot_active = settings.get("bot_active", "true").lower() != "false"
+            
+            # --- MUAT ULANG DATA POLLING DARI DATABASE ---
+            for k, v in settings.items():
+                if k.startswith("poll_"):
+                    try:
+                        poll_data = json.loads(v)
+                        # Kembalikan list ke set untuk voter_ids agar pencarian lebih cepat
+                        poll_data['voter_ids'] = set(poll_data.get('voter_ids', []))
+                        poll_id = k.replace("poll_", "")
+                        POLL_DB[poll_id] = poll_data
+                    except Exception as e:
+                        logger.error(f"Gagal meload poll {k}: {e}")
         else:
             await db(lambda: supabase.table("bot_settings").insert({"key": "menfess_mode", "value": "auto"}).execute())
             await db(lambda: supabase.table("bot_settings").insert({"key": "bot_active", "value": "true"}).execute())
@@ -139,6 +152,20 @@ async def check_system_tools():
             logger.info(f"🚀 {name} terdeteksi di: {path}")
         else:
             logger.warning(f"⚠️ {name} TIDAK ditemukan! Fitur /live bakal error.")
+
+async def save_poll_to_db(poll_id, poll_data):
+    """Simpan state polling ke Supabase agar aman saat restart."""
+    try:
+        data_to_save = poll_data.copy()
+        # JSON tidak mendukung tipe data 'set', jadi ubah ke 'list' dulu
+        data_to_save['voter_ids'] = list(data_to_save.get('voter_ids', []))
+        
+        await db(lambda: supabase.table("bot_settings").upsert({
+            "key": f"poll_{poll_id}", 
+            "value": json.dumps(data_to_save)
+        }).execute())
+    except Exception as e:
+        logger.error(f"Gagal save poll {poll_id} ke database: {e}")
 
 
 async def on_startup(application: Application):
@@ -582,6 +609,25 @@ async def start(update: Update, context: CallbackContext):
     if user_id in CACHE_BANNED_USERS:
         return await update.message.reply_text("❌ Akses kamu ke bot ini telah diblokir.")
 
+    if user_id in CACHE_BANNED_USERS:
+        return await update.message.reply_text("❌ Akses kamu ke bot ini telah diblokir.")
+
+    # --- TANGKAP DEEP LINK POLLING ---
+    if context.args and context.args[0].startswith("poll_"):
+        poll_id = context.args[0].split("_")[1]
+        
+        if poll_id not in POLL_DB:
+            await update.message.reply_text("❌ Polling tidak ditemukan atau sudah ditutup.")
+            return
+            
+        if user_id in POLL_DB[poll_id]["voter_ids"]:
+            await update.message.reply_text("⚠️ Kamu sudah mengisi polling ini. Setiap orang hanya bisa vote 1 kali!")
+            return
+            
+        context.user_data['filling_poll_id'] = poll_id
+        await update.message.reply_text("✏️ Silakan masukkan pesan / isian untuk polling ini (Maksimal 150 karakter):")
+        return # Menghentikan fungsi /start agar tidak mengirim sapaan utama
+
     await save_user(user_id, context)
 
     if await check_subscription(user_id, context):
@@ -607,6 +653,69 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
     if update.effective_chat.type != "private":
         return ConversationHandler.END
+
+    if update.effective_chat.type != "private":
+        return ConversationHandler.END
+
+    user_id = update.effective_user.id
+    
+    # --- CEGAT PENGISIAN BOARD POLLING ---
+    poll_id = context.user_data.get('filling_poll_id')
+    if poll_id:
+        text = update.message.text
+        if not text:
+            await update.message.reply_text("❌ Isian polling harus berupa teks biasa. Silakan kirim ulang:")
+            return ConversationHandler.END
+            
+        if len(text) > 150:
+            await update.message.reply_text(f"❌ Pesan terlalu panjang ({len(text)}/150 karakter). Silakan persingkat:")
+            return ConversationHandler.END
+            
+        poll = POLL_DB.get(poll_id)
+        if not poll:
+            await update.message.reply_text("❌ Polling sudah tidak aktif.")
+            context.user_data.pop('filling_poll_id', None)
+            return ConversationHandler.END
+            
+        if user_id in poll['voter_ids']:
+            await update.message.reply_text("⚠️ Kamu sudah mengisi polling ini.")
+            context.user_data.pop('filling_poll_id', None)
+            return ConversationHandler.END
+            
+        # Rekam vote ke memory
+        poll['voter_ids'].add(user_id)
+        display_name = update.effective_user.first_name if not poll['anon'] else "Anonim"
+        poll['votes'].append({"user_id": user_id, "name": display_name, "text": text})
+        
+        # Simpan ke Database
+        await save_poll_to_db(poll_id, poll)
+        
+        # Kirim Visual Log ke Grup Log Khusus Polling
+        keyboard_log = [[InlineKeyboardButton("🗑️ Hapus Vote Ini", callback_data=f"delvote|{poll_id}|{user_id}")]]
+        try:
+            await context.bot.send_message(
+                chat_id=POLL_LOG_GROUP_ID,
+                text=f"📋 *LOG BOARD POLLING*\n"
+                     f"**Poll ID:** `{poll_id}`\n"
+                     f"**Judul:** {poll['judul']}\n"
+                     f"**Pengirim:** [{update.effective_user.first_name}](tg://user?id={user_id}) (`{user_id}`)\n"
+                     f"**Isi:** {text}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard_log)
+            )
+        except Exception as e:
+            logger.error(f"Gagal kirim log poll: {e}")
+            
+        await update.message.reply_text("✅ Isian polling kamu berhasil direkam dan sedang diupdate ke channel!", reply_markup=get_main_keyboard())
+        context.user_data.pop('filling_poll_id', None)
+        
+        # Trigger JobQueue untuk update text ke channel (Batching 5 Detik)
+        job_name = f"update_poll_{poll_id}"
+        if not context.job_queue.get_jobs_by_name(job_name):
+            context.job_queue.run_once(update_poll_board, when=5, data=poll_id, name=job_name)
+            
+        return ConversationHandler.END
+    # ----------------------------------------
 
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -2701,6 +2810,151 @@ async def handle_boardrep_callback(update: Update, context: CallbackContext):
         BOARDREP_CACHE[unique_id] = hidden_text
         await query.answer("❌ Terjadi kesalahan jaringan, silakan coba tekan lagi.", show_alert=True)
 
+# ==========================================
+# FITUR BOARD POLLING
+# ==========================================
+
+async def create_polling(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID: # Hanya admin yang bisa buat
+        return ConversationHandler.END
+        
+    if not context.args:
+        await update.message.reply_text("⚠️ Gunakan format: `/polling <Judul Polling>`", parse_mode="Markdown")
+        return ConversationHandler.END
+        
+    judul = " ".join(context.args)
+    poll_id = str(uuid.uuid4())[:8] # Buat ID unik 8 karakter
+    
+    context.user_data['temp_poll_id'] = poll_id
+    context.user_data['temp_poll_judul'] = judul
+    
+    keyboard = [
+        [InlineKeyboardButton("👻 Anonim", callback_data="pollanon_yes"),
+         InlineKeyboardButton("👤 Tidak Anonim", callback_data="pollanon_no")]
+    ]
+    await update.message.reply_text(
+        "Apakah nama pengisi polling ini akan ditampilkan (Tidak Anonim) atau disembunyikan (Anonim)?", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return POLL_ANON
+
+async def poll_anon_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    is_anon = (query.data == "pollanon_yes")
+    context.user_data['temp_poll_anon'] = is_anon
+    
+    teks_status = "Aktif" if is_anon else "Mati"
+    await query.edit_message_text(f"Mode Anonim: *{teks_status}*\n\nSekarang kirimkan teks untuk tombol inline yang akan ditekan user (Contoh: `Silakan Vote!`)", parse_mode="Markdown")
+    return POLL_BTN_TEXT
+
+async def poll_btn_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    btn_text = update.message.text
+    poll_id = context.user_data['temp_poll_id']
+    judul = context.user_data['temp_poll_judul']
+    is_anon = context.user_data['temp_poll_anon']
+    
+    # Inisialisasi data poll ke memory
+    POLL_DB[poll_id] = {
+        "judul": judul,
+        "anon": is_anon,
+        "btn_text": btn_text,
+        "votes": [], 
+        "voter_ids": set() 
+    }
+    
+    bot_me = await context.bot.get_me()
+    deep_link = f"https://t.me/{bot_me.username}?start=poll_{poll_id}"
+    keyboard = [[InlineKeyboardButton(btn_text, url=deep_link)]]
+    
+    text_awal = f"📊 *{judul}*\n\n_Belum ada suara._"
+    
+    # Kirim langsung ke Channel
+    msg = await context.bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=text_awal,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    POLL_DB[poll_id]['channel_msg_id'] = msg.message_id
+    
+    # Simpan ke Database (Supabase)
+    await save_poll_to_db(poll_id, POLL_DB[poll_id])
+    
+    await update.message.reply_text(f"✅ Board polling berhasil diposting ke channel!\n\nID Polling: `{poll_id}`", parse_mode="Markdown")
+    
+    context.user_data.pop('temp_poll_id', None)
+    context.user_data.pop('temp_poll_judul', None)
+    context.user_data.pop('temp_poll_anon', None)
+    return ConversationHandler.END
+
+async def cancel_polling(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop('temp_poll_id', None)
+    await update.message.reply_text("❌ Pembuatan polling dibatalkan.")
+    return ConversationHandler.END
+
+async def update_poll_board(context: ContextTypes.DEFAULT_TYPE):
+    """Fungsi JobQueue untuk Batch Update ke Channel setiap 5 detik."""
+    poll_id = context.job.data
+    poll = POLL_DB.get(poll_id)
+    
+    if not poll or 'channel_msg_id' not in poll:
+        return
+        
+    text = f"📊 *{poll['judul']}*\n\n"
+    if not poll['votes']:
+        text += "_Belum ada suara._"
+    else:
+        for idx, v in enumerate(poll['votes'], 1):
+            text += f"*{idx}. {v['name']}:* {v['text']}\n"
+        
+    bot_me = await context.bot.get_me()
+    deep_link = f"https://t.me/{bot_me.username}?start=poll_{poll_id}"
+    keyboard = [[InlineKeyboardButton(poll['btn_text'], url=deep_link)]]
+    
+    try:
+        await context.bot.edit_message_text(
+            chat_id=CHANNEL_ID,
+            message_id=poll['channel_msg_id'],
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        if "Message is not modified" not in str(e):
+            logger.error(f"Gagal update board polling {poll_id}: {e}")
+
+async def handle_delete_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fungsi Admin Hapus Vote via Inline Button di Log Group."""
+    query = update.callback_query
+    try:
+        _, poll_id, user_id_str = query.data.split("|")
+        user_id = int(user_id_str)
+    except Exception:
+        return await query.answer("Format data tidak valid.", show_alert=True)
+    
+    poll = POLL_DB.get(poll_id)
+    if not poll:
+        return await query.answer("Polling ini sudah dihapus dari memory bot.", show_alert=True)
+        
+    original_length = len(poll['votes'])
+    poll['votes'] = [v for v in poll['votes'] if v['user_id'] != user_id]
+    
+    if len(poll['votes']) < original_length:
+        poll['voter_ids'].discard(user_id) 
+        await save_poll_to_db(poll_id, poll)
+        
+        await query.answer("Vote terhapus! Board di channel sedang disinkronisasi.", show_alert=True)
+        await query.edit_message_text(f"{query.message.text}\n\n❌ _VOTE TELAH DIHAPUS OLEH ADMIN_")
+        
+        job_name = f"update_poll_{poll_id}"
+        if not context.job_queue.get_jobs_by_name(job_name):
+            context.job_queue.run_once(update_poll_board, when=5, data=poll_id, name=job_name)
+    else:
+        await query.answer("Vote tidak ditemukan atau sudah dihapus sebelumnya.", show_alert=True)
+
 async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
@@ -2835,12 +3089,24 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler('cancel', cancel_menfess, filters.ChatType.PRIVATE))
 
+    # Handler Polling
+    conv_polling = ConversationHandler(
+        entry_points=[CommandHandler('polling', create_polling)],
+        states={
+            POLL_ANON: [CallbackQueryHandler(poll_anon_callback, pattern="^pollanon_")],
+            POLL_BTN_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, poll_btn_text_received)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_polling)]
+    )
+    application.add_handler(conv_polling)
+
     # Handler Grup (Admin & Diskusi)
     application.add_handler(CallbackQueryHandler(handle_callback_review, pattern="^mf\|"))
     application.add_handler(CallbackQueryHandler(handle_del_menfess, pattern="^del_"))
     application.add_handler(CallbackQueryHandler(handle_cort_callback, pattern="^cort\|"))
     application.add_handler(CallbackQueryHandler(handle_stop_anon_callback, pattern="^stop_anon_"))
     application.add_handler(CallbackQueryHandler(handle_boardrep_callback, pattern="^brep\|"))
+    application.add_handler(CallbackQueryHandler(handle_delete_vote, pattern="^delvote\|"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
