@@ -66,6 +66,9 @@ POLL_LOG_GROUP_ID = int(os.environ.get('POLL_LOG_GROUP_ID', LOG_GROUP_ID))
 POLL_DB = {}
 POLL_ANON, POLL_BTN_TEXT = range(20, 22)
 
+# Guard flag: mencegah dua broadcast berjalan bersamaan yang bisa menyebabkan flood ban.
+_broadcast_running = False
+
 
 # ==============================================================================
 # FIX: Semua panggilan Supabase (sinkron) dibungkus asyncio.to_thread() agar
@@ -1427,11 +1430,33 @@ async def get_group_id(update: Update, context: CallbackContext):
 
 
 async def get_all_user_ids():
+    """
+    Fetch semua user_id dengan pagination untuk melewati batas default 1000 baris Supabase.
+    Supabase (PostgREST) secara diam-diam memotong hasil .select().execute() di 1000 baris.
+    Fungsi ini melakukan loop dengan .range() hingga semua data terambil.
+    """
+    all_ids = []
+    page_size = 1000
+    offset = 0
     try:
-        response = await db(lambda: supabase.table("users").select("user_id").execute())
-        return [row["user_id"] for row in response.data] if hasattr(response, "data") and response.data else []
-    except Exception:
-        return []
+        while True:
+            response = await db(
+                lambda o=offset: supabase
+                    .table("users")
+                    .select("user_id")
+                    .range(o, o + page_size - 1)
+                    .execute()
+            )
+            if not (hasattr(response, "data") and response.data):
+                break
+            all_ids.extend(row["user_id"] for row in response.data)
+            # Jika baris yang dikembalikan kurang dari page_size, berarti sudah halaman terakhir
+            if len(response.data) < page_size:
+                break
+            offset += page_size
+    except Exception as e:
+        logger.error(f"Gagal fetch semua user IDs: {e}")
+    return all_ids
 
 
 async def menu(update: Update, context: CallbackContext):
@@ -1443,113 +1468,152 @@ async def menu(update: Update, context: CallbackContext):
 
 
 async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: 
+    global _broadcast_running
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
         return await update.message.reply_text("Format: /broadcastfw <link>")
-    
+
+    # FIX: Cegah dua broadcast berjalan bersamaan untuk menghindari flood ban Telegram.
+    if _broadcast_running:
+        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai sebelum memulai yang baru.")
+
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
-    if not match: 
+    if not match:
         return await update.message.reply_text("❌ Link tidak valid!")
-    
+
     channel_username, message_id = match.groups()
-    if channel_username == "c": 
+    if channel_username == "c":
         return await update.message.reply_text("❌ Tidak bisa forward menggunakan link dari channel private!")
 
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: 
+    if total_users == 0:
         return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
+    _broadcast_running = True
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 20 # 20 sudah cukup aman
-    
+    batch_size = 20
+
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast forward ke {total_users} user...*", parse_mode="Markdown")
-    
-    for i in range(0, total_users, batch_size):
-        batch = user_list[i : i + batch_size]
-        tasks = [context.bot.forward_message(chat_id=uid, from_chat_id=f"@{channel_username}", message_id=int(message_id)) for uid in batch]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for idx, res in enumerate(results):
-            if isinstance(res, Exception):
-                fc += 1
-                failed_users.append(str(batch[idx]))
-            else:
-                sc += 1
-        
-        # PERBAIKAN: Update status setiap 4 batch saja (setiap 80 user) agar tidak kena limit
-        if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
-            try:
-                await status_msg.edit_text(f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-            except Exception as e:
-                logging.warning(f"Gagal edit status broadcastfw: {e}") # Abaikan jika gagal edit, yang penting loop jalan terus
 
-        await asyncio.sleep(1.5) # Jeda aman untuk Telegram API
-
-    # PERBAIKAN: Try-except untuk status final
     try:
-        await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        for i in range(0, total_users, batch_size):
+            batch = user_list[i : i + batch_size]
+            tasks = [context.bot.forward_message(chat_id=uid, from_chat_id=f"@{channel_username}", message_id=int(message_id)) for uid in batch]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception):
+                    fc += 1
+                    failed_users.append(str(batch[idx]))
+                else:
+                    sc += 1
+
+            # Update status setiap 4 batch (setiap 80 user) agar tidak kena edit rate-limit
+            if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ *Sedang memproses broadcast forward... ({min(i + batch_size, total_users)}/{total_users})*\n"
+                        f"✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.warning(f"Gagal edit status broadcastfw: {e}")
+
+            await asyncio.sleep(1.5)
+
+    finally:
+        # FIX: Pastikan flag selalu dilepas meskipun terjadi exception di tengah loop.
+        _broadcast_running = False
+
+    try:
+        await status_msg.edit_text(
+            f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+            parse_mode="Markdown"
+        )
     except Exception:
-        await update.message.reply_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+            parse_mode="Markdown"
+        )
 
     if failed_users:
         await context.bot.send_document(
-            chat_id=update.effective_chat.id, 
+            chat_id=update.effective_chat.id,
             document="\n".join(failed_users).encode('utf-8'),
             filename="failed_broadcast_forward.txt",
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima broadcast forward."
         )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args: 
+    global _broadcast_running
+    if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
         return await update.message.reply_text("Format: /broadcast <teks>")
-    
+
+    # FIX: Cegah dua broadcast berjalan bersamaan untuk menghindari flood ban Telegram.
+    if _broadcast_running:
+        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai sebelum memulai yang baru.")
+
     message_text = " ".join(context.args)
     user_list = await get_all_user_ids()
     total_users = len(user_list)
-    if total_users == 0: 
+    if total_users == 0:
         return await update.message.reply_text("⚠️ Tidak ada user di database.")
 
+    _broadcast_running = True
     sc, fc = 0, 0
     failed_users = []
-    # Disamakan menjadi 20 agar setara dengan broadcastfw
-    batch_size = 20 
-    
+    batch_size = 20
+
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast ke {total_users} user...*", parse_mode="Markdown")
-    
-    for i in range(0, total_users, batch_size):
-        batch = user_list[i : i + batch_size]
-        tasks = [context.bot.send_message(chat_id=uid, text=message_text) for uid in batch]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for idx, res in enumerate(results):
-            if isinstance(res, Exception):
-                fc += 1
-                failed_users.append(str(batch[idx]))
-            else:
-                sc += 1
-        
-        # Update status setiap 4 batch (setiap 80 user)
-        if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
-            try:
-                await status_msg.edit_text(f"⏳ *Sedang memproses broadcast... ({min(i + batch_size, total_users)}/{total_users})*\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
-            except Exception as e:
-                logging.warning(f"Gagal edit status broadcast: {e}") # Loop tetap aman berjalan
 
-        await asyncio.sleep(1.5) # Jeda aman untuk Telegram API
-
-    # Try-except untuk status final
     try:
-        await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        for i in range(0, total_users, batch_size):
+            batch = user_list[i : i + batch_size]
+            tasks = [context.bot.send_message(chat_id=uid, text=message_text) for uid in batch]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception):
+                    fc += 1
+                    failed_users.append(str(batch[idx]))
+                else:
+                    sc += 1
+
+            # Update status setiap 4 batch (setiap 80 user) agar tidak kena edit rate-limit
+            if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ *Sedang memproses broadcast... ({min(i + batch_size, total_users)}/{total_users})*\n"
+                        f"✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.warning(f"Gagal edit status broadcast: {e}")
+
+            await asyncio.sleep(1.5)
+
+    finally:
+        # FIX: Pastikan flag selalu dilepas meskipun terjadi exception di tengah loop.
+        _broadcast_running = False
+
+    try:
+        await status_msg.edit_text(
+            f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+            parse_mode="Markdown"
+        )
     except Exception:
-        await update.message.reply_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
+            parse_mode="Markdown"
+        )
 
     if failed_users:
         await context.bot.send_document(
-            chat_id=update.effective_chat.id, 
+            chat_id=update.effective_chat.id,
             document="\n".join(failed_users).encode('utf-8'),
             filename="failed_broadcast.txt",
             caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima pesan broadcast."
@@ -3022,7 +3086,15 @@ async def refresh_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
+    # FIX: concurrent_updates=True memungkinkan setiap update diproses sebagai asyncio.Task
+    # terpisah, sehingga broadcast yang berjalan lama tidak memblokir command/pesan lain.
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(on_startup)
+        .concurrent_updates(True)
+        .build()
+    )
 
     application.add_handler(CommandHandler("addhashtag", add_hashtag))
     application.add_handler(CommandHandler("removehashtag", remove_hashtag))
