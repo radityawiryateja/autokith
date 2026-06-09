@@ -684,7 +684,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             
         # Rekam vote ke memory
         poll['voter_ids'].add(user_id)
-        display_name = update.effective_user.first_name if not poll['anon'] else "Anonim"
+        display_name = update.effective_user.first_name if not poll['anon'] else "☁️"
         poll['votes'].append({"user_id": user_id, "name": display_name, "text": text})
         
         # Simpan ke Database
