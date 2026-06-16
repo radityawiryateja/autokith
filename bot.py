@@ -1648,9 +1648,11 @@ async def process_broadcast_failures(context: ContextTypes.DEFAULT_TYPE, chat_id
         task_id = str(uuid.uuid4())[:8]
         BROADCAST_DELETE_CACHE[task_id] = to_delete
         
-        keyboard = [[InlineKeyboardButton(f"🗑️ Hapus {len(to_delete)} User Gagal (Koin ≤ 100)", callback_data=f"delbc|{task_id}")]]
+        # Ubah teks tombol di sini 👇
+        keyboard = [[InlineKeyboardButton(f"🛠️ Generate SQL Hapus ({len(to_delete)} User)", callback_data=f"delbc|{task_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        caption += f"\n\n🚨 *Perhatian:* Ada {len(to_delete)} user yang tidak bisa dihubungi dan memiliki total history koin minim (≤ 100). Kamu dapat langsung menghapus mereka dari database."
+        # Ubah teks caption di sini 👇
+        caption += f"\n\n🚨 *Perhatian:* Ada {len(to_delete)} user yang tidak bisa dihubungi dan memiliki koin minim (≤ 100). Klik tombol di bawah untuk membuat kode SQL penghapusannya."
 
     # Tambahkan parameter timeout untuk mencegah error telegram.error.TimedOut
     try:
@@ -1686,28 +1688,55 @@ async def handle_broadcast_delete_callback(update: Update, context: CallbackCont
     if not query.data.startswith("delbc|"):
         return
 
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     task_id = query.data.split("|")[1]
     to_delete = BROADCAST_DELETE_CACHE.get(task_id)
 
     if not to_delete:
-        return await query.edit_message_caption(caption=f"{query.message.caption}\n\n❌ *Aksi sudah kadaluarsa atau data telah dihapus sebelumnya.*", parse_mode="Markdown")
-
-    await query.edit_message_caption(caption=f"{query.message.caption}\n\n⏳ *Sedang menghapus {len(to_delete)} user dari database...*", parse_mode="Markdown")
-
-    success_count = 0
-    for i in range(0, len(to_delete), 100):
-        batch = to_delete[i:i+100]
         try:
-            await db(lambda b=batch: supabase.table("users").delete().in_("user_id", b).execute())
-            success_count += len(batch)
-        except Exception as e:
-            logger.error(f"Gagal hapus user di broadcast delete: {e}")
+            return await query.edit_message_caption(
+                caption=f"{query.message.caption}\n\n❌ *Data sudah kadaluarsa atau SQL sudah di-generate sebelumnya.*", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            return
 
-    # Hapus data dari cache agar tombol tidak dieksekusi 2x
+    # Hapus dari cache agar tidak memakan memori berlebih
     BROADCAST_DELETE_CACHE.pop(task_id, None)
 
-    await query.edit_message_caption(caption=f"{query.message.caption}\n\n✅ *Berhasil membersihkan {success_count} user tidak aktif dari database.*", parse_mode="Markdown")
+    # Ubah status caption pada pesan awal
+    try:
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n✅ *Kode SQL berhasil di-generate!*", 
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    # Buat query SQL
+    ids_str = ", ".join(str(uid) for uid in to_delete)
+    sql_query = f"-- Copy dan jalankan query ini di SQL Editor Supabase kamu\nDELETE FROM users WHERE user_id IN ({ids_str});"
+
+    # Kirim hasil (Telegram punya limit sekitar 4000 karakter per pesan teks)
+    if len(sql_query) > 3500:
+        file_content = sql_query.encode('utf-8')
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=file_content,
+            filename="delete_failed_users.sql",
+            caption=f"📄 *Kode SQL terlalu panjang!*\nSilakan download file `.sql` ini, lalu copy seluruh isinya dan jalankan di menu **SQL Editor** pada dashboard Supabase kamu.",
+            parse_mode="Markdown"
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"Berikut adalah kode SQL untuk menghapus {len(to_delete)} user tersebut.\nSilakan tekan teks di bawah untuk menyalin, lalu jalankan di **SQL Editor** Supabase:\n\n```sql\n{sql_query}\n```",
+            parse_mode="Markdown"
+        )
 
 async def add_command(update: Update, context: CallbackContext) -> None:
     # FIX: cek command_name tidak None sebelum memanggil .startswith(),
