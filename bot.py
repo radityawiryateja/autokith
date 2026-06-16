@@ -65,6 +65,8 @@ BOARDREP_CACHE = {}
 POLL_LOG_GROUP_ID = int(os.environ.get('POLL_LOG_GROUP_ID', LOG_GROUP_ID))
 POLL_DB = {}
 POLL_ANON, POLL_BTN_TEXT = range(20, 22)
+TOPIC_ID_ANON_LOG = 5417
+BROADCAST_DELETE_CACHE = {}
 
 # Guard flag: mencegah dua broadcast berjalan bersamaan yang bisa menyebabkan flood ban.
 _broadcast_running = False
@@ -571,16 +573,18 @@ async def save_user(user_id, context: CallbackContext):
         # Eksekusi simpan ke database
         await db(lambda: supabase.table("users").upsert({"user_id": user_id}, on_conflict=["user_id"]).execute())
         
-        # Jika berhasil, kirim log SUKSES ke grup admin
+        # Jika berhasil, kirim log SUKSES ke grup admin (dalam topik khusus)
         await context.bot.send_message(
             chat_id=ADMIN_GROUP_ID,
+            message_thread_id=TOPIC_ID_ANON_LOG,
             text=f"✅ *DB LOG:* Berhasil menyimpan/update user ID: `{user_id}` ke database Supabase.",
             parse_mode="Markdown"
         )
     except Exception as e:
-        # Jika gagal, kirim log ERROR ke grup admin
+        # Jika gagal, kirim log ERROR ke grup admin (dalam topik khusus)
         await context.bot.send_message(
             chat_id=ADMIN_GROUP_ID,
+            message_thread_id=TOPIC_ID_ANON_LOG,
             text=f"⚠️ *DB ERROR:* Gagal menyimpan user ID: `{user_id}`!\n\n*Detail Error:*\n`{e}`",
             parse_mode="Markdown"
         )
@@ -1472,9 +1476,8 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
         return await update.message.reply_text("Format: /broadcastfw <link>")
 
-    # FIX: Cegah dua broadcast berjalan bersamaan untuk menghindari flood ban Telegram.
     if _broadcast_running:
-        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai sebelum memulai yang baru.")
+        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai.")
 
     link = context.args[0]
     match = re.search(r"t\.me/([a-zA-Z0-9_]+)/(\d+)", link)
@@ -1493,25 +1496,24 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _broadcast_running = True
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 20
+    batch_size = 10 # Diperkecil agar lebih aman dari limit
 
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast forward ke {total_users} user...*", parse_mode="Markdown")
 
     try:
         for i in range(0, total_users, batch_size):
             batch = user_list[i : i + batch_size]
-            tasks = [context.bot.forward_message(chat_id=uid, from_chat_id=f"@{channel_username}", message_id=int(message_id)) for uid in batch]
+            tasks = [safe_forward(context, uid, f"@{channel_username}", int(message_id)) for uid in batch]
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for idx, res in enumerate(results):
                 if isinstance(res, Exception):
                     fc += 1
-                    failed_users.append(str(batch[idx]))
+                    failed_users.append(batch[idx]) # Simpan sebagai integer
                 else:
                     sc += 1
 
-            # Update status setiap 4 batch (setiap 80 user) agar tidak kena edit rate-limit
             if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
                 try:
                     await status_msg.edit_text(
@@ -1519,42 +1521,30 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"✅ Berhasil: {sc}\n❌ Gagal: {fc}",
                         parse_mode="Markdown"
                     )
-                except Exception as e:
-                    logger.warning(f"Gagal edit status broadcastfw: {e}")
+                except Exception:
+                    pass
 
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.0) # Jeda dinaikkan agar tidak kena spam block
 
     finally:
-        # FIX: Pastikan flag selalu dilepas meskipun terjadi exception di tengah loop.
         _broadcast_running = False
 
     try:
-        await status_msg.edit_text(
-            f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
-            parse_mode="Markdown"
-        )
+        await status_msg.edit_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
     except Exception:
-        await update.message.reply_text(
-            f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
-        await context.bot.send_document(
-            chat_id=update.effective_chat.id,
-            document="\n".join(failed_users).encode('utf-8'),
-            filename="failed_broadcast_forward.txt",
-            caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima broadcast forward."
-        )
+        await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast_forward")
+
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global _broadcast_running
     if update.effective_chat.id != ADMIN_GROUP_ID or not context.args:
         return await update.message.reply_text("Format: /broadcast <teks>")
 
-    # FIX: Cegah dua broadcast berjalan bersamaan untuk menghindari flood ban Telegram.
     if _broadcast_running:
-        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai sebelum memulai yang baru.")
+        return await update.message.reply_text("⚠️ Broadcast sedang berjalan. Tunggu hingga selesai.")
 
     message_text = " ".join(context.args)
     user_list = await get_all_user_ids()
@@ -1565,7 +1555,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _broadcast_running = True
     sc, fc = 0, 0
     failed_users = []
-    batch_size = 20
+    batch_size = 10
 
     status_msg = await update.message.reply_text(f"⏳ *Memulai broadcast ke {total_users} user...*", parse_mode="Markdown")
 
@@ -1579,11 +1569,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for idx, res in enumerate(results):
                 if isinstance(res, Exception):
                     fc += 1
-                    failed_users.append(str(batch[idx]))
+                    failed_users.append(batch[idx])
                 else:
                     sc += 1
 
-            # Update status setiap 4 batch (setiap 80 user) agar tidak kena edit rate-limit
             if (i // batch_size) % 4 == 0 or (i + batch_size) >= total_users:
                 try:
                     await status_msg.edit_text(
@@ -1591,34 +1580,108 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"✅ Berhasil: {sc}\n❌ Gagal: {fc}",
                         parse_mode="Markdown"
                     )
-                except Exception as e:
-                    logger.warning(f"Gagal edit status broadcast: {e}")
+                except Exception:
+                    pass
 
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.0)
 
     finally:
-        # FIX: Pastikan flag selalu dilepas meskipun terjadi exception di tengah loop.
         _broadcast_running = False
 
     try:
-        await status_msg.edit_text(
-            f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
-            parse_mode="Markdown"
-        )
+        await status_msg.edit_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
     except Exception:
-        await update.message.reply_text(
-            f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
-        await context.bot.send_document(
-            chat_id=update.effective_chat.id,
-            document="\n".join(failed_users).encode('utf-8'),
-            filename="failed_broadcast.txt",
-            caption=f"📄 Terdapat {len(failed_users)} user yang gagal menerima pesan broadcast."
-        )
+        await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast")
 
+async def safe_forward(context, chat_id, from_chat_id, message_id):
+    """Fallback ke copy_message jika user memblokir forward pesan karena alasan privasi."""
+    try:
+        return await context.bot.forward_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id)
+    except Exception:
+        return await context.bot.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id)
+
+async def process_broadcast_failures(context: ContextTypes.DEFAULT_TYPE, chat_id: int, failed_ids: list, broadcast_name: str):
+    """Fungsi rekap user yang gagal dikirimi pesan dan opsi penghapusan."""
+    if not failed_ids:
+        return
+
+    # Ambil data koin secara bulk
+    failed_data = {}
+    for i in range(0, len(failed_ids), 200):
+        batch_ids = failed_ids[i:i+200]
+        try:
+            res = await db(lambda b=batch_ids: supabase.table("users").select("user_id, total_kith_coins").in_("user_id", b).execute())
+            if res and hasattr(res, 'data') and res.data:
+                for row in res.data:
+                    failed_data[row["user_id"]] = row.get("total_kith_coins", 0)
+        except Exception as e:
+            logger.error(f"Gagal fetch failed users coins: {e}")
+
+    file_lines = []
+    to_delete = []
+
+    for uid in failed_ids:
+        coins = failed_data.get(uid, 0)
+        if coins is None:
+            coins = 0
+            
+        file_lines.append(f"ID: {uid} | Total History Kithkoins: {coins}")
+        
+        # Logika Koin: Jika koin <= 100, masukkan ke daftar yang boleh dihapus
+        if coins <= 100:
+            to_delete.append(uid)
+
+    file_content = "\n".join(file_lines).encode('utf-8')
+    filename = f"failed_{broadcast_name}.txt"
+    caption = f"📄 Terdapat {len(failed_ids)} user yang gagal menerima {broadcast_name}."
+
+    reply_markup = None
+    if to_delete:
+        task_id = str(uuid.uuid4())[:8]
+        BROADCAST_DELETE_CACHE[task_id] = to_delete
+        
+        keyboard = [[InlineKeyboardButton(f"🗑️ Hapus {len(to_delete)} User Gagal (Koin ≤ 100)", callback_data=f"delbc|{task_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        caption += f"\n\n🚨 *Perhatian:* Ada {len(to_delete)} user yang tidak bisa dihubungi dan memiliki total history koin minim (≤ 100). Kamu dapat langsung menghapus mereka dari database."
+
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=file_content,
+        filename=filename,
+        caption=caption,
+        reply_markup=reply_markup
+    )
+
+async def handle_broadcast_delete_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not query.data.startswith("delbc|"):
+        return
+
+    await query.answer()
+    task_id = query.data.split("|")[1]
+    to_delete = BROADCAST_DELETE_CACHE.get(task_id)
+
+    if not to_delete:
+        return await query.edit_message_caption(caption=f"{query.message.caption}\n\n❌ *Aksi sudah kadaluarsa atau data telah dihapus sebelumnya.*", parse_mode="Markdown")
+
+    await query.edit_message_caption(caption=f"{query.message.caption}\n\n⏳ *Sedang menghapus {len(to_delete)} user dari database...*", parse_mode="Markdown")
+
+    success_count = 0
+    for i in range(0, len(to_delete), 100):
+        batch = to_delete[i:i+100]
+        try:
+            await db(lambda b=batch: supabase.table("users").delete().in_("user_id", b).execute())
+            success_count += len(batch)
+        except Exception as e:
+            logger.error(f"Gagal hapus user di broadcast delete: {e}")
+
+    # Hapus data dari cache agar tombol tidak dieksekusi 2x
+    BROADCAST_DELETE_CACHE.pop(task_id, None)
+
+    await query.edit_message_caption(caption=f"{query.message.caption}\n\n✅ *Berhasil membersihkan {success_count} user tidak aktif dari database.*", parse_mode="Markdown")
 
 async def add_command(update: Update, context: CallbackContext) -> None:
     # FIX: cek command_name tidak None sebelum memanggil .startswith(),
@@ -3179,6 +3242,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_stop_anon_callback, pattern="^stop_anon_"))
     application.add_handler(CallbackQueryHandler(handle_boardrep_callback, pattern="^brep\|"))
     application.add_handler(CallbackQueryHandler(handle_delete_vote, pattern="^delvote\|"))
+    application.add_handler(CallbackQueryHandler(handle_broadcast_delete_callback, pattern="^delbc\|"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
