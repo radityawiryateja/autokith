@@ -954,8 +954,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text("⛔ Sesi menfess saat ini sedang ditutup oleh admin.")
             
         return ConversationHandler.END
-
-    # --- PROSES MENFESS ---
+        
     # --- PROSES MENFESS ---
     if MENFESS_MODE == "cort":
         if not update.message.text:
@@ -1535,7 +1534,10 @@ async def broadcast_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ *Broadcast Forward Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
-        await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast_forward")
+        try:
+            await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast_forward")
+        except Exception as e:
+            logger.error(f"Error memproses file failed broadcast_forward: {e}")
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1594,7 +1596,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ *Broadcast Selesai!*\n👥 Total Target: {total_users}\n✅ Berhasil: {sc}\n❌ Gagal: {fc}", parse_mode="Markdown")
 
     if failed_users:
-        await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast")
+        try:
+            await process_broadcast_failures(context, update.effective_chat.id, failed_users, "broadcast")
+        except Exception as e:
+            logger.error(f"Error memproses file failed broadcast: {e}")
 
 async def safe_forward(context, chat_id, from_chat_id, message_id):
     """Fallback ke copy_message jika user memblokir forward pesan karena alasan privasi."""
@@ -1646,6 +1651,27 @@ async def process_broadcast_failures(context: ContextTypes.DEFAULT_TYPE, chat_id
         keyboard = [[InlineKeyboardButton(f"🗑️ Hapus {len(to_delete)} User Gagal (Koin ≤ 100)", callback_data=f"delbc|{task_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         caption += f"\n\n🚨 *Perhatian:* Ada {len(to_delete)} user yang tidak bisa dihubungi dan memiliki total history koin minim (≤ 100). Kamu dapat langsung menghapus mereka dari database."
+
+    # Tambahkan parameter timeout untuk mencegah error telegram.error.TimedOut
+    try:
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=file_content,
+            filename=filename,
+            caption=caption,
+            reply_markup=reply_markup,
+            read_timeout=60,    # Perpanjang waktu baca ke 60 detik
+            write_timeout=60,   # Perpanjang waktu tulis ke 60 detik
+            connect_timeout=60  # Perpanjang waktu koneksi ke 60 detik
+        )
+    except Exception as e:
+        logger.error(f"Gagal mengirim dokumen laporan broadcast: {e}")
+        # Jika file tetap gagal dikirim, kirim pesan teks biasa tanpa file
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ *Laporan {broadcast_name}*\nTerdapat {len(failed_ids)} user yang gagal dikirimi pesan, namun file laporan gagal diunggah karena limit waktu Telegram (Timeout).\n\nSilakan cek log server untuk detailnya.",
+            parse_mode="Markdown"
+        )
 
     await context.bot.send_document(
         chat_id=chat_id,
