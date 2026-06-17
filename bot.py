@@ -15,20 +15,23 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
 from supabase import create_client
 
-# Tarik data dari Environment Variables (Heroku)
+# Tarik data dari Environment Variables (Heroku) - HANYA KREDENSIAL UTAMA
 try:
     BOT_TOKEN = os.environ.get('BOT_TOKEN')
-    CHANNEL_ID = os.environ.get('CHANNEL_ID')
-
-    # Gunakan default 0 agar tidak crash jika variabel belum diset di Heroku
-    GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', 0))
-    ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', 0))
-    LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', 0))
-
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
     SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+    TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 except Exception as e:
     print(f"⚠️ Error mengambil Environment Variables: {e}")
+
+# Berikan nilai default awal agar bot tidak crash (akan ditimpa oleh DB)
+CHANNEL_ID = "@kitheons"
+GROUP_ID_DISKUSI = 0
+ADMIN_GROUP_ID = 0
+LOG_GROUP_ID = 0
+LIVE_MAX_DURATION = 9.8
+LIVE_MAX_INPUT_FILE_SIZE_MB = 50
+LIVE_MAX_OUTPUT_FILE_SIZE_MB = 10
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,10 +42,6 @@ MENFESS_MODE = "auto"  # Cache default, di-update dari DB saat startup
 TITLE_PRICE = 500  # Harga Custom Title
 LIVE_PHOTO_PRICE = int(os.environ.get("LIVE_PHOTO_PRICE", "100"))  # Harga fitur Photo Live
 
-# === KONFIGURASI LIVE PHOTO TELEGRAM NATIVE ===
-LIVE_MAX_DURATION = min(float(os.environ.get("LIVE_MAX_DURATION", "9.8")), 9.8)
-LIVE_MAX_INPUT_FILE_SIZE_MB = int(os.environ.get("LIVE_MAX_INPUT_FILE_SIZE_MB", "50"))
-LIVE_MAX_OUTPUT_FILE_SIZE_MB = min(int(os.environ.get("LIVE_MAX_OUTPUT_FILE_SIZE_MB", "10")), 10)
 TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 
 WAITING_USERNAME = 1
@@ -51,8 +50,27 @@ KEYBOARD_STATE_LIVE = "WAITING_LIVE_FROM_KEYBOARD"
 
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    # === AMBIL KONFIGURASI ENV DARI DATABASE ===
+    db_env_res = supabase.table("env_config").select("key, value").execute()
+    if hasattr(db_env_res, 'data') and db_env_res.data:
+        # Ubah ke bentuk dictionary agar mudah diambil
+        db_envs = {row["key"]: row["value"] for row in db_env_res.data}
+        
+        # Timpa nilai variabel global dengan data dari tabel env_config
+        CHANNEL_ID = db_envs.get('CHANNEL_ID', CHANNEL_ID)
+        GROUP_ID_DISKUSI = int(db_envs.get('GROUP_ID_DISKUSI', GROUP_ID_DISKUSI))
+        ADMIN_GROUP_ID = int(db_envs.get('ADMIN_GROUP_ID', ADMIN_GROUP_ID))
+        LOG_GROUP_ID = int(db_envs.get('LOG_GROUP_ID', LOG_GROUP_ID))
+        
+        # Tetap gunakan komparasi min() untuk menjaga batasan limit Telegram
+        LIVE_MAX_DURATION = min(float(db_envs.get('LIVE_MAX_DURATION', "9.8")), 9.8)
+        LIVE_MAX_INPUT_FILE_SIZE_MB = int(db_envs.get('LIVE_MAX_INPUT_FILE_SIZE_MB', "50"))
+        LIVE_MAX_OUTPUT_FILE_SIZE_MB = min(int(db_envs.get('LIVE_MAX_OUTPUT_FILE_SIZE_MB', "10")), 10)
+        
+        logger.info("✅ Berhasil memuat Environment Variables khusus dari Supabase!")
 except Exception as e:
-    logger.error(f"Gagal koneksi ke Supabase: {e}")
+    logger.error(f"Gagal koneksi ke Supabase atau menarik data ENV: {e}")
 
 CACHE_HASHTAGS = []
 required_channels = []
