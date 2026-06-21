@@ -23,15 +23,15 @@ try:
     TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 
     CHANNEL_ID = os.environ.get('CHANNEL_ID')
-    GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', 0))
-    ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', 0))
-    LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', 0))
+    GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', -1002936651839))
+    ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', -1003647473093))
+    LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', -1003900893106))
     
     # === TAMBAHAN ID TOPIK UNTUK LOG DI GRUP ADMIN ===
-    TOPIC_ID_MENFESS_LOG = int(os.environ.get('TOPIC_ID_MENFESS_LOG', 0))
-    TOPIC_ID_CORT_LOG = int(os.environ.get('TOPIC_ID_CORT_LOG', 0))
-    TOPIC_ID_POLL_LOG = int(os.environ.get('TOPIC_ID_POLL_LOG', 0))
-    TOPIC_ID_ANON_LOG = int(os.environ.get('TOPIC_ID_ANON_LOG', 5417)) # Yang sudah ada
+    TOPIC_ID_MENFESS_LOG = int(os.environ.get('TOPIC_ID_MENFESS_LOG', 8630))
+    TOPIC_ID_CORT_LOG = int(os.environ.get('TOPIC_ID_CORT_LOG', 8654))
+    TOPIC_ID_POLL_LOG = int(os.environ.get('TOPIC_ID_POLL_LOG', 8656))
+    TOPIC_ID_ANON_LOG = int(os.environ.get('TOPIC_ID_ANON_LOG', 5417))
 
     LIVE_MAX_DURATION = min(float(os.environ.get('LIVE_MAX_DURATION', "9.8")), 9.8)
     LIVE_MAX_INPUT_FILE_SIZE_MB = int(os.environ.get('LIVE_MAX_INPUT_FILE_SIZE_MB', "50"))
