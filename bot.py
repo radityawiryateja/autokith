@@ -21,56 +21,42 @@ try:
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
     SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
     TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+
+    CHANNEL_ID = os.environ.get('CHANNEL_ID')
+    GROUP_ID_DISKUSI = int(os.environ.get('GROUP_ID_DISKUSI', 0))
+    ADMIN_GROUP_ID = int(os.environ.get('ADMIN_GROUP_ID', 0))
+    LOG_GROUP_ID = int(os.environ.get('LOG_GROUP_ID', 0))
+    
+    # === TAMBAHAN ID TOPIK UNTUK LOG DI GRUP ADMIN ===
+    TOPIC_ID_MENFESS_LOG = int(os.environ.get('TOPIC_ID_MENFESS_LOG', 0))
+    TOPIC_ID_CORT_LOG = int(os.environ.get('TOPIC_ID_CORT_LOG', 0))
+    TOPIC_ID_POLL_LOG = int(os.environ.get('TOPIC_ID_POLL_LOG', 0))
+    TOPIC_ID_ANON_LOG = int(os.environ.get('TOPIC_ID_ANON_LOG', 5417)) # Yang sudah ada
+
+    LIVE_MAX_DURATION = min(float(os.environ.get('LIVE_MAX_DURATION', "9.8")), 9.8)
+    LIVE_MAX_INPUT_FILE_SIZE_MB = int(os.environ.get('LIVE_MAX_INPUT_FILE_SIZE_MB', "50"))
+    LIVE_MAX_OUTPUT_FILE_SIZE_MB = min(int(os.environ.get('LIVE_MAX_OUTPUT_FILE_SIZE_MB', "10")), 10)
+    LIVE_PHOTO_PRICE = int(os.environ.get("LIVE_PHOTO_PRICE", "100"))
+
 except Exception as e:
     print(f"⚠️ Error mengambil Environment Variables: {e}")
-
-# Berikan nilai default awal agar bot tidak crash (akan ditimpa oleh DB)
-CHANNEL_ID = "@kitheons"
-GROUP_ID_DISKUSI = 0
-ADMIN_GROUP_ID = 0
-LOG_GROUP_ID = 0
-LIVE_MAX_DURATION = 9.8
-LIVE_MAX_INPUT_FILE_SIZE_MB = 50
-LIVE_MAX_OUTPUT_FILE_SIZE_MB = 10
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FIX: bot_active sekarang di-load dari DB saat startup agar persist antar restart/dyno.
 bot_active = True
-MENFESS_MODE = "auto"  # Cache default, di-update dari DB saat startup
-TITLE_PRICE = 500  # Harga Custom Title
-LIVE_PHOTO_PRICE = int(os.environ.get("LIVE_PHOTO_PRICE", "100"))  # Harga fitur Photo Live
-
-TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+MENFESS_MODE = "auto"
+TITLE_PRICE = 500  
 
 WAITING_USERNAME = 1
 KEYBOARD_STATE_TITLE = "WAITING_TITLE_FROM_KEYBOARD"
 KEYBOARD_STATE_LIVE = "WAITING_LIVE_FROM_KEYBOARD"
 
+# Supabase Client Initialization
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    # === AMBIL KONFIGURASI ENV DARI DATABASE ===
-    db_env_res = supabase.table("env_config").select("key, value").execute()
-    if hasattr(db_env_res, 'data') and db_env_res.data:
-        # Ubah ke bentuk dictionary agar mudah diambil
-        db_envs = {row["key"]: row["value"] for row in db_env_res.data}
-        
-        # Timpa nilai variabel global dengan data dari tabel env_config
-        CHANNEL_ID = db_envs.get('CHANNEL_ID', CHANNEL_ID)
-        GROUP_ID_DISKUSI = int(db_envs.get('GROUP_ID_DISKUSI', GROUP_ID_DISKUSI))
-        ADMIN_GROUP_ID = int(db_envs.get('ADMIN_GROUP_ID', ADMIN_GROUP_ID))
-        LOG_GROUP_ID = int(db_envs.get('LOG_GROUP_ID', LOG_GROUP_ID))
-        
-        # Tetap gunakan komparasi min() untuk menjaga batasan limit Telegram
-        LIVE_MAX_DURATION = min(float(db_envs.get('LIVE_MAX_DURATION', "9.8")), 9.8)
-        LIVE_MAX_INPUT_FILE_SIZE_MB = int(db_envs.get('LIVE_MAX_INPUT_FILE_SIZE_MB', "50"))
-        LIVE_MAX_OUTPUT_FILE_SIZE_MB = min(int(db_envs.get('LIVE_MAX_OUTPUT_FILE_SIZE_MB', "10")), 10)
-        
-        logger.info("✅ Berhasil memuat Environment Variables khusus dari Supabase!")
 except Exception as e:
-    logger.error(f"Gagal koneksi ke Supabase atau menarik data ENV: {e}")
+    logger.error(f"Gagal inisialisasi Supabase: {e}")
 
 CACHE_HASHTAGS = []
 required_channels = []
@@ -719,7 +705,8 @@ async def handle_pesan(update: Update, context: CallbackContext):
         keyboard_log = [[InlineKeyboardButton("🗑️ Hapus Vote Ini", callback_data=f"delvote|{poll_id}|{user_id}")]]
         try:
             await context.bot.send_message(
-                chat_id=POLL_LOG_GROUP_ID,
+                chat_id=ADMIN_GROUP_ID,                 
+                message_thread_id=TOPIC_ID_POLL_LOG,     
                 text=f"📋 *LOG BOARD POLLING*\n"
                      f"**Poll ID:** `{poll_id}`\n"
                      f"**Judul:** {poll['judul']}\n"
@@ -974,14 +961,19 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
         
     # --- PROSES MENFESS ---
+    # --- PROSES MENFESS ---
     if MENFESS_MODE == "cort":
         if not update.message.text:
             await update.message.reply_text("❌ Mode Anonymous Court hanya menerima teks cerita.")
             return ConversationHandler.END
 
-        cerita = update.message.text
+        # 1. Ambil teks dengan format HTML bawaan (menjaga bold, italic, spoiler, link, dll)
+        cerita_html = update.message.text_html
+        
         display_name = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
-        text_channel = f"⚖️ *ANONYMOUS COURT* ⚖️\n\n📝 *Kasus:*\n_{cerita}_"
+        
+        # 2. Ubah format string channel menggunakan HTML tag (<b> untuk tebal, bukan lagi bintang *)
+        text_channel = f"⚖️ <b>ANONYMOUS COURT</b> ⚖️\n\n📝 <b>Kasus:</b>\n{cerita_html}"
         
         keyboard = [
             [
@@ -996,7 +988,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
                 chat_id=CHANNEL_ID,
                 text=text_channel,
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
+                parse_mode="HTML" # 3. Ubah parse_mode ke HTML
             )
             
             CORT_VOTES[msg.message_id] = {
@@ -1013,7 +1005,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             new_balance = await add_kith_coins(user_id, 50)
             coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
             
-            # --- TAMBAHAN TOMBOL INLINE MENUJU PESAN CHANNEL ---
+            # Tombol reply ke user tetap pakai Markdown tidak apa-apa karena ini teks statis dari bot
             keyboard_user = [[InlineKeyboardButton("⚖️ Lihat Kasus Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")]]
             await update.message.reply_text(
                 f"✅ Kasusmu berhasil diajukan ke pengadilan channel!{coin_msg}", 
@@ -1021,12 +1013,21 @@ async def handle_pesan(update: Update, context: CallbackContext):
                 parse_mode="Markdown"
             )
 
-            log_msg = f"📌 Log Menfess (CORT):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n💬 Kasus: {cerita}"
+            # 4. Ubah format log_msg agar support HTML juga, mencegah crash di grup log!
+            log_msg = f"📌 <b>Log Menfess (CORT):</b>\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: <code>{user_id}</code>\n💬 Kasus: {cerita_html}"
+            
             keyboard_log = [
                 [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")],
                 [InlineKeyboardButton("❌ Hapus & Tegur", callback_data=f"del_{user_id}_{msg.message_id}")]
             ]
-            await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, reply_markup=InlineKeyboardMarkup(keyboard_log), parse_mode="Markdown")
+            
+            # 5. Kirim log ke grup log menggunakan HTML
+            await context.bot.send_message(
+                chat_id=LOG_GROUP_ID, 
+                text=log_msg, 
+                reply_markup=InlineKeyboardMarkup(keyboard_log), 
+                parse_mode="HTML" # parse_mode diubah ke HTML
+            )
 
         except Exception as e:
             logger.error(f"Gagal kirim cort menfess: {e}")
@@ -1144,8 +1145,8 @@ async def handle_username(update: Update, context: CallbackContext):
         ]
         
         await context.bot.send_message(
-            chat_id=LOG_GROUP_ID, 
-            text=log_msg, 
+            chat_id=ADMIN_GROUP_ID, 
+            message_thread_id=TOPIC_ID_MENFESS_LOG,
             reply_markup=InlineKeyboardMarkup(keyboard_log), 
             parse_mode="Markdown"
         )
@@ -1192,7 +1193,12 @@ async def handle_callback_review(update: Update, context: CallbackContext):
                     CACHE_COMSECT_OFF.add(sent_msg.message_id)
 
                 log_msg = f"📌 Log Menfess (Manual Approved):\n🆔 Pengirim ID: `{user_id}`\n⚙️ Comsect: {'ON' if comsect_on else 'OFF'}"
-                await context.bot.send_message(chat_id=LOG_GROUP_ID, text=log_msg, parse_mode="Markdown")
+                await context.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    message_thread_id=TOPIC_ID_MENFESS_LOG,
+                    text=log_msg,
+                    parse_mode="Markdown"
+                )
 
                 new_balance = await add_kith_coins(user_id, earned_coins)
 
@@ -1202,6 +1208,12 @@ async def handle_callback_review(update: Update, context: CallbackContext):
                     logger.error(f"DB Error Map: {e}")
 
                 await query.edit_message_text(f"{query.message.text}\n\n✅ *STATUS: {status_text}*", parse_mode="Markdown")
+                await send_admin_log(
+                    context, 
+                    f"Approve Menfess ({'CS ON' if comsect_on else 'CS OFF'})", 
+                    update.effective_user, 
+                    f"Sender ID: `{user_id}`\nPost ID: {sent_msg.message_id}"
+                )
 
                 coin_msg = f"\n💰 *+{earned_coins} Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
                 keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{sent_msg.message_id}")]]
@@ -1214,6 +1226,12 @@ async def handle_callback_review(update: Update, context: CallbackContext):
             await query.edit_message_text(f"{query.message.text}\n\n❌ *STATUS: DITOLAK*", parse_mode="Markdown")
             warning_text = "⚠️ *Menfess Ditolak*\n\nMaaf, menfess kamu ditolak oleh admin karena belum sesuai dengan rules base. Silakan perbaiki format/isi menfess kamu dan kirim ulang ya!"
             await context.bot.send_message(chat_id=user_id, text=warning_text, parse_mode="Markdown")
+            await send_admin_log(
+                context, 
+                "Menolak Menfess (Reject)", 
+                update.effective_user, 
+                f"Sender ID: `{user_id}`"
+            )
 
 
 async def handle_admin_reply(update: Update, context: CallbackContext):
@@ -1269,6 +1287,13 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
             from_chat_id=update.effective_chat.id, 
             message_id=update.message.message_id
         )
+
+        await send_admin_log(
+            context, 
+            "Membalas Pesan User/Userbot", 
+            update.effective_user, 
+            f"Ke User ID: `{user_id}`\nIsi Balasan: {reply_text[:50]}..."
+        )
         
         # Sesuaikan teks notifikasi agar admin tahu pesan masuk ke jalur mana
         notif_text = "💬 Pesan anonim terkirim!" if "#AnonFallback" in replied_text else "✅ Balasan telah dikirim ke user."
@@ -1283,8 +1308,49 @@ async def handle_admin_reply(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Gagal mengirim balasan.")
 
 
-async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
+async def handle_channel_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if LOG_GROUP_ID == 0: return
+
+    # Deteksi apakah ini post baru atau editan
+    if update.channel_post:
+        msg = update.channel_post
+        action = "Memposting di Channel"
+    elif update.edited_channel_post:
+        msg = update.edited_channel_post
+        action = "Mengedit Pesan di Channel"
+    else:
+        return
+
+    # Pastikan ini dari channel base yang terdaftar
+    if msg.chat.username and "@" + msg.chat.username.lower() != CHANNEL_ID.lower():
+        return 
+
+    # Ambil data admin (Catatan: Telegram menyembunyikan ID admin jika mode anonim channel aktif)
+    admin_name = "Admin (Anonim Channel)"
+    admin_username = "Tidak ada"
+    admin_id = "N/A"
+
+    if msg.from_user: 
+        admin_name = msg.from_user.first_name
+        admin_username = f"@{msg.from_user.username}" if msg.from_user.username else "Tidak ada"
+        admin_id = msg.from_user.id
+    elif msg.author_signature: # Jika signature/nama admin diaktifkan di setingan channel
+        admin_name = f"Signature: {msg.author_signature}"
+
+    text_preview = msg.text or msg.caption or "[Media Tanpa Teks]"
+    
+    text = (
+        f"🚨 *CHANNEL ACTIVITY LOG*\n"
+        f"👤 *Oleh:* {admin_name} ({admin_username})\n"
+        f"🆔 *ID:* `{admin_id}`\n"
+        f"🛠 *Aksi:* {action}\n"
+        f"🔗 *Message ID:* {msg.message_id}\n"
+        f"📝 *Isi/Perubahan:* {text_preview[:100]}..."
+    )
+    try:
+        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=text, parse_mode="Markdown")
+    except Exception:
+        pass
 
 async def update_cort_message_bg(bot, chat_id, msg_id, vote_data):
     """
@@ -2815,6 +2881,13 @@ async def handle_del_menfess(update: Update, context: CallbackContext):
             text="❌ *Pesan kamu dihapus admin karena tidak sesuai ketentuan base. Silakan baca rules kembali.*", 
             parse_mode="Markdown"
         )
+
+        await send_admin_log(
+            context, 
+            "Menghapus Menfess & Menegur User", 
+            update.effective_user, 
+            f"Message ID Channel: {post_id}\nUser Tujuan: `{user_id}`"
+        )
         
         # Update log
         await query.edit_message_text(f"{query.message.text_markdown}\n\n✅ *Status: Dihapus & User ditegur.*", parse_mode="Markdown")
@@ -2933,6 +3006,25 @@ async def break_all_anon(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error di break_all_anon: {e}")
         await status_msg.edit_text(f"❌ Terjadi kesalahan saat eksekusi: `{e}`", parse_mode="Markdown")
+
+async def send_admin_log(context: CallbackContext, action: str, admin_user, details: str):
+    if LOG_GROUP_ID == 0: return
+    
+    admin_name = admin_user.first_name
+    admin_username = f"@{admin_user.username}" if admin_user.username else "Tidak ada"
+    admin_id = admin_user.id
+    
+    text = (
+        f"🚨 *ADMIN ACTIVITY LOG*\n"
+        f"👤 *Oleh:* {admin_name} ({admin_username})\n"
+        f"🆔 *ID Admin:* `{admin_id}`\n"
+        f"🛠 *Aksi:* {action}\n"
+        f"📝 *Detail:* {details}"
+    )
+    try:
+        await context.bot.send_message(chat_id=LOG_GROUP_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Gagal kirim admin log: {e}")
 
 async def boardrep_cmd(update: Update, context: CallbackContext):
     # Batasi agar hanya admin yang bisa pakai command ini (opsional, sesuaikan kebutuhan)
@@ -3107,8 +3199,8 @@ async def update_poll_board(context: ContextTypes.DEFAULT_TYPE):
     if not poll['votes']:
         text += "_Belum ada suara._"
     else:
-        for idx, v in enumerate(poll['votes'], 1):
-            text += f"*{idx}. {v['name']}:* {v['text']}\n"
+        for v in poll['votes']:
+            text += f"*{v['name']}:* {v['text']}\n"
         
     bot_me = await context.bot.get_me()
     deep_link = f"https://t.me/{bot_me.username}?start=poll_{poll_id}"
@@ -3318,7 +3410,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_broadcast_delete_callback, pattern=r"^delbc\|"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_post))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_update))
     application.add_handler(MessageHandler(filters.Chat(GROUP_ID_DISKUSI), handle_discussion))
 
     # --- Handler Fitur Anon Chat ---
