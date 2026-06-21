@@ -1147,6 +1147,7 @@ async def handle_username(update: Update, context: CallbackContext):
         await context.bot.send_message(
             chat_id=ADMIN_GROUP_ID, 
             message_thread_id=TOPIC_ID_MENFESS_LOG,
+            text=log_msg,
             reply_markup=InlineKeyboardMarkup(keyboard_log), 
             parse_mode="Markdown"
         )
