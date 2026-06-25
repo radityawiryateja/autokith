@@ -14,6 +14,7 @@ import httpx
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
 from supabase import create_client
+from datetime import datetime, timezone
 
 # Tarik data dari Environment Variables (Heroku) - HANYA KREDENSIAL UTAMA
 try:
@@ -1038,6 +1039,26 @@ async def handle_pesan(update: Update, context: CallbackContext):
         
     # --- PROSES MENFESS ---
     elif MENFESS_MODE == "auto":
+        # --- 1. CEK COOLDOWN SENDER ID VIA SUPABASE ---
+        try:
+            # Ambil 1 data menfess terakhir dari user ini
+            res_sender = await db(lambda: supabase.table("menfess_map").select("created_at").eq("sender_user_id", user_id).order("created_at", desc=True).limit(1).execute())
+            
+            if hasattr(res_sender, 'data') and res_sender.data:
+                # Parsing string ISO 8601 dari Supabase ke datetime Python
+                last_sent_str = res_sender.data[0]['created_at']
+                # Konversi string Z (UTC) ke format yang bisa dibaca datetime
+                last_sent_dt = datetime.fromisoformat(last_sent_str.replace("Z", "+00:00"))
+                now_utc = datetime.now(timezone.utc)
+                
+                selisih_detik = (now_utc - last_sent_dt).total_seconds()
+                
+                if selisih_detik < 7200: # 7200 detik = 2 Jam
+                    sisa_menit = int((7200 - selisih_detik) / 60)
+                    await update.message.reply_text(f"⏳ Ups! Kamu masih dalam masa cooldown 2 jam. Silakan kirim menfess lagi dalam {sisa_menit} menit.")
+                    return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"Gagal cek cooldown sender: {e}")
         if not update.message.text:
             await update.message.reply_text("❌ Sesi /auto sedang aktif! Kamu hanya diperbolehkan mengirim pesan teks saja (tanpa media).")
             return ConversationHandler.END
@@ -1112,6 +1133,30 @@ async def handle_username(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     target_username = raw_input.replace("@", "")
+    # --- 2. CEK COOLDOWN TARGET USERNAME VIA SUPABASE ---
+    try:
+        # Ambil 1 data terakhir dimana username ini dijadikan target
+        res_target = await db(lambda: supabase.table("menfess_map").select("created_at").eq("target_username", target_username).order("created_at", desc=True).limit(1).execute())
+        
+        if hasattr(res_target, 'data') and res_target.data:
+            last_used_str = res_target.data[0]['created_at']
+            last_used_dt = datetime.fromisoformat(last_used_str.replace("Z", "+00:00"))
+            now_utc = datetime.now(timezone.utc)
+            
+            selisih_detik = (now_utc - last_used_dt).total_seconds()
+            
+            if selisih_detik < 7200:
+                sisa_menit = int((7200 - selisih_detik) / 60)
+                await update.message.reply_text(
+                    f"⏳ Username @{target_username} baru saja mendapatkan menfess!\n\n"
+                    f"Untuk mencegah spamming, username ini sedang dalam masa cooldown. Silakan gunakan username lain atau coba lagi dalam {sisa_menit} menit.", 
+                    reply_markup=get_main_keyboard()
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Gagal cek cooldown target: {e}")
+        
     teks_asli = context.user_data.get('teks_menfess', "")
     
     # FIX: Ubah menjadi list agar bisa digabungkan dengan list [invisible_link]
@@ -1143,7 +1188,7 @@ async def handle_username(update: Update, context: CallbackContext):
 
         # Simpan ke DB
         try:
-            await db(lambda: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id}).execute())
+            await db(lambda: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id, "target_username": target_username}).execute())
         except Exception as e:
             logger.error(f"DB Error Auto: {e}")
 
