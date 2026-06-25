@@ -2929,16 +2929,23 @@ async def handle_del_menfess(update: Update, context: CallbackContext):
     post_id = int(data[2])
 
     try:
-        # Hapus dari channel
+        # 1. Hapus dari channel Telegram
         await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=post_id)
         
-        # Kirim DM teguran
+        # 2. Hapus record dari database Supabase (Tabel menfess_map)
+        try:
+            await db(lambda: supabase.table("menfess_map").delete().eq("post_id", post_id).execute())
+        except Exception as db_err:
+            logger.error(f"Gagal hapus data menfess_map di DB: {db_err}")
+        
+        # 3. Kirim DM teguran ke pengirim
         await context.bot.send_message(
             chat_id=user_id, 
             text="❌ *Pesan kamu dihapus admin karena tidak sesuai ketentuan base. Silakan baca rules kembali.*", 
             parse_mode="Markdown"
         )
 
+        # 4. Kirim log aktivitas admin
         await send_admin_log(
             context, 
             "Menghapus Menfess & Menegur User", 
@@ -2946,8 +2953,8 @@ async def handle_del_menfess(update: Update, context: CallbackContext):
             f"Message ID Channel: {post_id}\nUser Tujuan: `{user_id}`"
         )
         
-        # Update log
-        await query.edit_message_text(f"{query.message.text_markdown}\n\n✅ *Status: Dihapus & User ditegur.*", parse_mode="Markdown")
+        # 5. Update teks tombol log di grup admin
+        await query.edit_message_text(f"{query.message.text_markdown}\n\n✅ *Status: Dihapus dari Channel & Database, User ditegur.*", parse_mode="Markdown")
         
     except Exception as e:
         logger.error(f"Gagal hapus menfess ID {post_id}: {e}")
