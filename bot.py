@@ -1078,7 +1078,8 @@ async def handle_pesan(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Menfess dilarang menyertakan mention atau username! (Link URL tetap diperbolehkan).")
             return ConversationHandler.END
 
-        if re.search(r'\b(fwa|affection(s)?)\b', pesan_teks_lower):
+        # Penambahan f[-\s\.]*w[-\s\.]*a untuk menangkap fwa, f-w-a, f.w.a, f w a
+        if re.search(r'\b(f[-\s\.]*w[-\s\.]*a|affections?|b[x×]b|b[x×]g|g[x×]b|wlw|mlm|wlm|mlw)\b', pesan_teks_lower):
             # Jika ada, cek apakah pesan mengandung angka (umur/tahun)
             if not re.search(r'\d+', pesan_teks_lower):
                 await update.message.reply_text(
