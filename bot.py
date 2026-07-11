@@ -11,10 +11,11 @@ import shutil
 import asyncio
 import httpx
 
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext, TypeHandler
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
 from supabase import create_client
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
 
 # Tarik data dari Environment Variables (Heroku) - HANYA KREDENSIAL UTAMA
 try:
@@ -66,7 +67,7 @@ CACHE_COMSECT_OFF = set()
 CACHE_BAD_WORDS = set()
 CORT_VOTES = {}
 BOARDREP_CACHE = {}
-BOARDREP_CACHE = {}
+CACHE_USERNAMES = {}
 POLL_LOG_GROUP_ID = int(os.environ.get('POLL_LOG_GROUP_ID', LOG_GROUP_ID))
 POLL_DB = {}
 POLL_ANON, POLL_BTN_TEXT = range(20, 22)
@@ -572,27 +573,36 @@ async def set_required_channels(update: Update, context: CallbackContext):
     await save_required_channels(required_channels)
     await update.message.reply_text(f"Daftar channel wajib diikuti telah diperbarui: {', '.join(required_channels)}")
 
-
-async def save_user(user_id, context: CallbackContext):
+async def bg_save_user(user_id: int, username: str):
+    """Fungsi ini akan dieksekusi di background, bot tidak akan menunggunya selesai."""
     try:
-        # Eksekusi simpan ke database
-        await db(lambda: supabase.table("users").upsert({"user_id": user_id}, on_conflict=["user_id"]).execute())
-        
-        # Jika berhasil, kirim log SUKSES ke grup admin (dalam topik khusus)
-        await context.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            message_thread_id=TOPIC_ID_ANON_LOG,
-            text=f"✅ *DB LOG:* Berhasil menyimpan/update user ID: `{user_id}` ke database Supabase.",
-            parse_mode="Markdown"
-        )
+        data_to_upsert = {"user_id": user_id}
+        if username:
+            data_to_upsert["username"] = username.lower()
+            
+        # Gunakan fungsi db() kamu yang sudah dibungkus asyncio.to_thread
+        await db(lambda: supabase.table("users").upsert(data_to_upsert, on_conflict=["user_id"]).execute())
     except Exception as e:
-        # Jika gagal, kirim log ERROR ke grup admin (dalam topik khusus)
-        await context.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            message_thread_id=TOPIC_ID_ANON_LOG,
-            text=f"⚠️ *DB ERROR:* Gagal menyimpan user ID: `{user_id}`!\n\n*Detail Error:*\n`{e}`",
-            parse_mode="Markdown"
-        )
+        logger.error(f"Gagal background save user ID {user_id}: {e}")
+
+async def global_user_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tracker yang berjalan diam-diam mengecek perubahan username."""
+    # Pastikan update berasal dari user (bukan update dari channel)
+    if not update.effective_user:
+        return
+        
+    user_id = update.effective_user.id
+    raw_username = update.effective_user.username
+    current_username = raw_username.lower() if raw_username else None
+    
+    # Cek apakah user belum ada di cache ATAU usernamenya beda dengan di cache
+    if user_id not in CACHE_USERNAMES or CACHE_USERNAMES.get(user_id) != current_username:
+        # Update cache memori
+        CACHE_USERNAMES[user_id] = current_username
+        
+        # Lempar ke background task! 
+        # (Bot akan langsung lanjut memproses pesan tanpa menunggu DB selesai)
+        asyncio.create_task(bg_save_user(user_id, current_username))
 
 
 def get_main_keyboard():
@@ -621,9 +631,6 @@ async def start(update: Update, context: CallbackContext):
     if user_id in CACHE_BANNED_USERS:
         return await update.message.reply_text("❌ Akses kamu ke bot ini telah diblokir.")
 
-    if user_id in CACHE_BANNED_USERS:
-        return await update.message.reply_text("❌ Akses kamu ke bot ini telah diblokir.")
-
     # --- TANGKAP DEEP LINK POLLING ---
     if context.args and context.args[0].startswith("poll_"):
         poll_id = context.args[0].split("_")[1]
@@ -640,7 +647,6 @@ async def start(update: Update, context: CallbackContext):
         await update.message.reply_text("✏️ Silakan masukkan pesan / isian untuk polling ini (Maksimal 150 karakter):")
         return # Menghentikan fungsi /start agar tidak mengirim sapaan utama
 
-    await save_user(user_id, context)
 
     if await check_subscription(user_id, context):
         await update.message.reply_text(
@@ -663,9 +669,6 @@ async def handle_pesan(update: Update, context: CallbackContext):
     # FIX: guard agar tidak crash jika effective_user atau message kosong
     if not update.effective_user or not update.message:
         return ConversationHandler.END
-    if update.effective_chat.type != "private":
-        return ConversationHandler.END
-
     if update.effective_chat.type != "private":
         return ConversationHandler.END
 
@@ -769,6 +772,31 @@ async def handle_pesan(update: Update, context: CallbackContext):
     if user_id in CACHE_BANNED_USERS:
         await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
         return ConversationHandler.END
+
+    if target_user_id in CACHE_BANNED_USERS:
+    await update.message.reply_text("❌ Kamu tidak bisa mengirim menfess ke target ini karena ia telah diblokir dari base.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+    # --- CEK STATUS MUTE ---
+    try:
+        res_mute = await db(lambda: supabase.table("users").select("muted_until").eq("user_id", user_id).execute())
+        if res_mute.data and res_mute.data[0].get("muted_until"):
+            muted_until_str = res_mute.data[0]["muted_until"]
+            muted_until_dt = datetime.fromisoformat(muted_until_str.replace("Z", "+00:00"))
+            now_utc = datetime.now(timezone.utc)
+            
+            if now_utc < muted_until_dt:
+                sisa = muted_until_dt - now_utc
+                jam, sisa_detik = divmod(sisa.seconds, 3600)
+                menit, _ = divmod(sisa_detik, 60)
+                await update.message.reply_text(f"🔇 Ups! Kamu sedang dalam masa mute.\nSisa waktu: {sisa.days} hari, {jam} jam, {menit} menit.")
+                return ConversationHandler.END
+            else:
+                # Jika waktu mute sudah habis, bersihkan statusnya agar tidak dicek terus
+                await db(lambda: supabase.table("users").update({"muted_until": None}).eq("user_id", user_id).execute())
+    except Exception as e:
+        logger.error(f"Gagal mengecek status mute: {e}")
 
     if update.message.reply_to_message:
         replied_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
@@ -1136,10 +1164,23 @@ async def handle_username(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     target_username = raw_input.replace("@", "")
-    # --- 2. CEK COOLDOWN TARGET USERNAME VIA SUPABASE ---
+    # --- 1. CARI TARGET USER ID (Anti-Bypass Username) ---
+    target_user_id = None
     try:
-        # Ambil 1 data terakhir dimana username ini dijadikan target
-        res_target = await db(lambda: supabase.table("menfess_map").select("created_at").eq("target_username", target_username).order("created_at", desc=True).limit(1).execute())
+        user_res = await db(lambda: supabase.table("users").select("user_id").eq("username", target_username).execute())
+        if user_res.data:
+            target_user_id = user_res.data[0]["user_id"]
+    except Exception as e:
+        logger.error(f"Gagal resolusi username ke ID: {e}")
+
+    # --- 2. CEK COOLDOWN TARGET ---
+    try:
+        if target_user_id:
+            # Jika user terdaftar, cek berdasarkan ID permanen mereka
+            res_target = await db(lambda: supabase.table("menfess_map").select("created_at").eq("target_user_id", target_user_id).order("created_at", desc=True).limit(1).execute())
+        else:
+            # Fallback jika target belum pernah memakai bot
+            res_target = await db(lambda: supabase.table("menfess_map").select("created_at").eq("target_username", target_username).order("created_at", desc=True).limit(1).execute())
         
         if hasattr(res_target, 'data') and res_target.data:
             last_used_str = res_target.data[0]['created_at']
@@ -1151,8 +1192,7 @@ async def handle_username(update: Update, context: CallbackContext):
             if selisih_detik < 7200:
                 sisa_menit = int((7200 - selisih_detik) / 60)
                 await update.message.reply_text(
-                    f"⏳ Username @{target_username} baru saja mendapatkan menfess!\n\n"
-                    f"Untuk mencegah spamming, username ini sedang dalam masa cooldown. Silakan gunakan username lain atau coba lagi dalam {sisa_menit} menit.", 
+                    f"⏳ Target sedang dalam masa cooldown. Silakan gunakan username lain atau coba lagi dalam {sisa_menit} menit.", 
                     reply_markup=get_main_keyboard()
                 )
                 context.user_data.clear()
@@ -1191,7 +1231,7 @@ async def handle_username(update: Update, context: CallbackContext):
 
         # Simpan ke DB
         try:
-            await db(lambda: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id, "target_username": target_username}).execute())
+            await db(lambda: supabase.table("menfess_map").insert({"post_id": message_sent.message_id, "sender_user_id": user_id, "target_username": target_username, "target_user_id": target_user_id}).execute())
         except Exception as e:
             logger.error(f"DB Error Auto: {e}")
 
@@ -2994,6 +3034,42 @@ async def handle_custom_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Gagal menjalankan custom command {command_name}: {e}")
 
+# === FITUR MUTE ===
+async def mute_user(update: Update, context: CallbackContext):
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+    if len(context.args) < 2:
+        return await update.message.reply_text("⚠️ Format: `/mute <user_id> <hari>`\nContoh: `/mute 123456789 1`", parse_mode="Markdown")
+
+    try:
+        target_id = int(context.args[0])
+        days = int(context.args[1])
+        
+        # Hitung waktu selesai mute
+        muted_until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+        await db(lambda: supabase.table("users").update({"muted_until": muted_until}).eq("user_id", target_id).execute())
+        await update.message.reply_text(f"🔇 User `{target_id}` berhasil di-mute selama {days} hari.", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ Gagal! Pastikan ID dan hari berupa angka.")
+    except Exception as e:
+        logger.error(f"Error mute: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengeksekusi mute.")
+
+
+async def unmute_user(update: Update, context: CallbackContext):
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Format: `/unmute <user_id>`")
+
+    try:
+        target_id = int(context.args[0])
+        await db(lambda: supabase.table("users").update({"muted_until": None}).eq("user_id", target_id).execute())
+        await update.message.reply_text(f"🔊 User `{target_id}` berhasil di-unmute.", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error unmute: {e}")
+        await update.message.reply_text("❌ Gagal unmute user.")
 
 async def refresh_total_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
@@ -3391,6 +3467,8 @@ def main():
         .build()
     )
 
+    application.add_handler(TypeHandler(Update, global_user_tracker), group=-1)
+
     application.add_handler(CommandHandler("addhashtag", add_hashtag))
     application.add_handler(CommandHandler("removehashtag", remove_hashtag))
     application.add_handler(CommandHandler("enablehashtag", enable_hashtag))
@@ -3410,6 +3488,8 @@ def main():
     # Commands admin
     application.add_handler(CommandHandler('block', block_user))
     application.add_handler(CommandHandler('unblock', unblock_user))
+    application.add_handler(CommandHandler('mute', mute_user))
+    application.add_handler(CommandHandler('unmute', unmute_user))
     application.add_handler(CommandHandler('auto', set_mode_auto))
     application.add_handler(CommandHandler('manual', set_mode_manual))
     application.add_handler(CommandHandler('cortmode', set_mode_cort))
