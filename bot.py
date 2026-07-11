@@ -774,9 +774,9 @@ async def handle_pesan(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     if target_user_id in CACHE_BANNED_USERS:
-    await update.message.reply_text("❌ Kamu tidak bisa mengirim menfess ke target ini karena ia telah diblokir dari base.")
-    context.user_data.clear()
-    return ConversationHandler.END
+        await update.message.reply_text("❌ Kamu tidak bisa mengirim menfess ke target ini karena ia telah diblokir dari base.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
     # --- CEK STATUS MUTE ---
     try:
