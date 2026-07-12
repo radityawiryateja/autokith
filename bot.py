@@ -906,6 +906,39 @@ async def handle_pesan(update: Update, context: CallbackContext):
     pesan_teks_lower = pesan_teks.lower()
     keyboard_state = context.user_data.get("keyboard_state")
 
+    # --- TANGKAP BUKTI TF VIP ---
+    if keyboard_state == "WAITING_VIP_RECEIPT":
+        if update.message.text == "❌ Cancel" or update.message.text == "/cancel":
+            context.user_data.clear()
+            await update.message.reply_text("✅ Pembelian VIP dibatalkan.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+
+        if not update.message.photo and not update.message.document:
+            await update.message.reply_text("❌ Tolong kirimkan FOTO bukti pembayaran ya! (Atau ketik /cancel)")
+            return ConversationHandler.END
+
+        pending_days = context.user_data.get("vip_pending_days", 30)
+        
+        # Kirim tiket ke grup admin
+        keyboard_admin = [
+            [InlineKeyboardButton("✅ Acc VIP", callback_data=f"vipacc|{user_id}|{pending_days}")],
+            [InlineKeyboardButton("❌ Tolak", callback_data=f"viprej|{user_id}")]
+        ]
+        
+        await context.bot.copy_message(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=TOPIC_ID_VIP_LOG,
+            from_chat_id=user_id,
+            message_id=update.message.message_id,
+            caption=f"🚨 *REVIEW BUKTI TF VIP*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n⏳ Paket: {pending_days} Hari",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard_admin)
+        )
+        
+        context.user_data.clear()
+        await update.message.reply_text("⏳ Bukti pembayaran berhasil dikirim! Silakan tunggu admin memverifikasi. (Kamu sudah kembali ke mode menfess biasa)", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+        
     if update.message.text == "❌ Cancel":
         context.user_data.clear()
         context.user_data.pop("keyboard_state", None)
@@ -1001,40 +1034,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             reply_markup=get_main_keyboard() 
         )
         return ConversationHandler.END
-
-    # --- TANGKAP BUKTI TF VIP ---
-    if keyboard_state == "WAITING_VIP_RECEIPT":
-        if update.message.text == "❌ Cancel" or update.message.text == "/cancel":
-            context.user_data.clear()
-            await update.message.reply_text("✅ Pembelian VIP dibatalkan.", reply_markup=get_main_keyboard())
-            return ConversationHandler.END
-
-        if not update.message.photo and not update.message.document:
-            await update.message.reply_text("❌ Tolong kirimkan FOTO bukti pembayaran ya! (Atau ketik /cancel)")
-            return ConversationHandler.END
-
-        pending_days = context.user_data.get("vip_pending_days", 30)
         
-        # Kirim tiket ke grup admin
-        keyboard_admin = [
-            [InlineKeyboardButton("✅ Acc VIP", callback_data=f"vipacc|{user_id}|{pending_days}")],
-            [InlineKeyboardButton("❌ Tolak", callback_data=f"viprej|{user_id}")]
-        ]
-        
-        await context.bot.copy_message(
-            chat_id=ADMIN_GROUP_ID,
-            message_thread_id=TOPIC_ID_VIP_LOG,
-            from_chat_id=user_id,
-            message_id=update.message.message_id,
-            caption=f"🚨 *REVIEW BUKTI TF VIP*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n⏳ Paket: {pending_days} Hari",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard_admin)
-        )
-        
-        context.user_data.clear()
-        await update.message.reply_text("⏳ Bukti pembayaran berhasil dikirim! Silakan tunggu admin memverifikasi. (Kamu sudah kembali ke mode menfess biasa)", reply_markup=get_main_keyboard())
-        return ConversationHandler.END
-
     # --- LOGIKA TOMBOL MAIN KEYBOARD ---
     if update.message.text == "👤 Profile":
         await cek_profile(update, context)
