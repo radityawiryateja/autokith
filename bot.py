@@ -306,7 +306,7 @@ async def handle_vip_menu(update: Update, context: CallbackContext):
         context.user_data["vip_pending_days"] = days
         context.user_data["keyboard_state"] = "WAITING_VIP_RECEIPT"
 
-        qris_url = "https://kqixzfnndcqgyhkvclsu.supabase.co/storage/v1/object/public/Foto/Tak%20berjudul329_20260712120349.png"
+        qris_url = "https://kqixzfnndcqgyhkvclsu.supabase.co/storage/v1/object/public/Foto/Kode%20QRIS%20Decavstore,%20Situraja.png"
         
         caption = (
             f"🛒 *Checkout VIP {dur_text}*\n\n"
@@ -1058,7 +1058,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             pass
 
         harga = TITLE_PRICE // 2 if is_vip else TITLE_PRICE
-        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade 💎 Premium di menu Profile buat dapet diskon 50% (Harga VIP cuma *{TITLE_PRICE // 2} Coins*)!"
+        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade ke Premium di menu Profile buat dapet harga diskon 50% (Harga VIP cuma *{TITLE_PRICE // 2} Coins*)"
 
         await update.message.reply_text(
             f"🛒 *Beli Custom Title*\nHarga: *{harga} Kith-Coins*.\n\nKetik *Nama Title Barumu* (Maks 16 karakter):{promo}",
@@ -1085,7 +1085,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             pass
 
         harga = LIVE_PHOTO_PRICE // 2 if is_vip else LIVE_PHOTO_PRICE
-        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade 💎 Premium di menu Profile buat dapet diskon 50% (Harga VIP cuma *{LIVE_PHOTO_PRICE // 2} Coins*)!"
+        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade ke Premium di menu Profile buat dapet harga diskon 50% (Harga VIP cuma *{LIVE_PHOTO_PRICE // 2} Coins*)"
 
         await update.message.reply_text(
             f"📸 *Buat Photo Live*\nBiaya: *{harga} Kith-Coins*\n\nKirim/forward videonya ke sini (maks {LIVE_MAX_DURATION:.0f} detik, input maksimal {LIVE_MAX_INPUT_FILE_SIZE_MB} MB).{promo}",
@@ -1412,11 +1412,11 @@ async def handle_username(update: Update, context: CallbackContext):
         
        # Reply ke user
         is_vip = context.user_data.get('is_vip', False)
-        vip_promo = "" if is_vip else "\n\n💡 *Tips:* Upgrade 💎 Premium di menu Profile biar nunggu cooldown selanjutnya cuma 30 menit! 🚀"
+        vip_promo = "" if is_vip else "\n\n💡 *Tips:* Upgrade ke Premium di menu Profile biar nunggu cooldown selanjutnya cuma 30 menit! 🚀"
 
         keyboard_user = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
         await update.message.reply_text(
-            f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}{vip_promo}", 
+            f"Pesan kamu telah dikirim ke channel!{coin_msg}{vip_promo}", 
             reply_markup=InlineKeyboardMarkup(keyboard_user), 
             parse_mode="Markdown"
         )
