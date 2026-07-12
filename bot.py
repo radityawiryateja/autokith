@@ -3046,6 +3046,10 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await db(lambda: supabase.table("users").update({"kith_coins": current_balance - actual_price}).eq("user_id", user_id).execute())
             charged = True
             
+    except Exception as e:
+        logger.error(f"Gagal mengecek/memotong saldo Live Photo: {e}")
+        return await msg.reply_text("❌ Terjadi kesalahan saat mengecek saldo. Silakan coba lagi nanti.", reply_markup=get_main_keyboard())
+
     charge_text = f" *(Saldo dipotong {actual_price} Coins)*" if actual_price > 0 else ""
     status_msg = await msg.reply_text(
         f"⏳ Memproses Live Photo...{charge_text}\nTahap 1/4: download video",
