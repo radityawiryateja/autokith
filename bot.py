@@ -772,12 +772,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
     if user_id in CACHE_BANNED_USERS:
         await update.message.reply_text("❌ Pesan ditolak. Akses kamu ke bot ini telah diblokir.")
         return ConversationHandler.END
-
-    if target_user_id in CACHE_BANNED_USERS:
-        await update.message.reply_text("❌ Kamu tidak bisa mengirim menfess ke target ini karena ia telah diblokir dari base.")
-        context.user_data.clear()
-        return ConversationHandler.END
-
+        
     # --- CEK STATUS MUTE ---
     try:
         res_mute = await db(lambda: supabase.table("users").select("muted_until").eq("user_id", user_id).execute())
@@ -1164,12 +1159,22 @@ async def handle_username(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     target_username = raw_input.replace("@", "")
-    # --- 1. CARI TARGET USER ID (Anti-Bypass Username) ---
+    # --- 1. CARI TARGET USER ID (Anti-Bypass Username & Cek Banned Target) ---
     target_user_id = None
     try:
         user_res = await db(lambda: supabase.table("users").select("user_id").eq("username", target_username).execute())
         if user_res.data:
             target_user_id = user_res.data[0]["user_id"]
+            
+            # ---> TAMBAHAN BARU: Cek apakah target ini adalah user yang di-banned
+            if target_user_id in CACHE_BANNED_USERS:
+                await update.message.reply_text(
+                    "❌ Gagal! Pengguna dari username tujuan ini telah diblokir dari bot dan tidak dapat menerima menfess.", 
+                    reply_markup=get_main_keyboard()
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
+                
     except Exception as e:
         logger.error(f"Gagal resolusi username ke ID: {e}")
 
