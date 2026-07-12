@@ -34,6 +34,7 @@ try:
     TOPIC_ID_CORT_LOG = int(os.environ.get('TOPIC_ID_CORT_LOG', 8654))
     TOPIC_ID_POLL_LOG = int(os.environ.get('TOPIC_ID_POLL_LOG', 8656))
     TOPIC_ID_ANON_LOG = int(os.environ.get('TOPIC_ID_ANON_LOG', 5417))
+    TOPIC_ID_VIP_LOG = int(os.environ.get('TOPIC_ID_VIP_LOG', 15881))
 
     LIVE_MAX_DURATION = min(float(os.environ.get('LIVE_MAX_DURATION', "9.8")), 9.8)
     LIVE_MAX_INPUT_FILE_SIZE_MB = int(os.environ.get('LIVE_MAX_INPUT_FILE_SIZE_MB', "50"))
@@ -244,24 +245,77 @@ async def add_kith_coins(user_id: int, amount: int):
 # === FITUR PROFIL & LEADERBOARD ===
 async def cek_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username or update.effective_user.first_name
-
     try:
-        res = await db(lambda: supabase.table("users").select("kith_coins, total_kith_coins").eq("user_id", user_id).execute())
+        res = await db(lambda: supabase.table("users").select("kith_coins, total_kith_coins, is_vip, vip_until").eq("user_id", user_id).execute())
         row = res.data[0] if res.data else {}
-        coins = row.get("kith_coins") if row.get("kith_coins") is not None else 0
-        total_coins = row.get("total_kith_coins") if row.get("total_kith_coins") is not None else coins
+        coins = row.get("kith_coins") or 0
+        total_coins = row.get("total_kith_coins") or coins
+        is_vip = row.get("is_vip", False)
+        
+        status_text = "💎 *VIP Member*" if is_vip else "👤 *Regular*"
 
         text = (
             f"👤 *PROFIL KAMU*\n\n"
             f"🆔 ID: `{user_id}`\n"
+            f"🏷️ Status: {status_text}\n"
             f"🪙 Saldo Kith-Coins: *{coins}*\n"
             f"🏆 Total Koin Diperoleh: *{total_coins}*\n"
         )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        
+        reply_markup = None
+        if not is_vip:
+            keyboard = [[InlineKeyboardButton("💎 Beli Premium", callback_data="buy_vip_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
+        logger.error(f"Error cek profil: {e}")
         await update.message.reply_text("❌ Gagal mengambil data profil.")
 
+async def handle_vip_menu(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "buy_vip_menu":
+        keyboard = [
+            [InlineKeyboardButton("1 Bulan (Rp 5.000)", callback_data="vip_dur_30")],
+            [InlineKeyboardButton("3 Bulan (Rp 12.000)", callback_data="vip_dur_90")],
+            [InlineKeyboardButton("Lifetime (Rp 45.000)", callback_data="vip_dur_9999")]
+        ]
+        await query.edit_message_text(
+            "💎 *Pilih Paket Premium Kitheons:*\n\n"
+            "✨ *Keuntungan VIP:*\n"
+            "- Cooldown auto menfess cuma 30 menit!\n"
+            "- Diskon 50% buat beli Title & Photo Live.\n"
+            "- Langsung dapet *5000 Kith-Coins* saat aktif!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if query.data.startswith("vip_dur_"):
+        days = int(query.data.split("_")[2])
+        
+        price = 5000 if days == 30 else 12000 if days == 90 else 45000
+        dur_text = "1 Bulan" if days == 30 else "3 Bulan" if days == 90 else "Lifetime"
+        
+        # Bikin kode unik 3 digit
+        kode_unik = random.randint(100, 999)
+        total_bayar = price + kode_unik
+
+        # Simpan state ke context
+        context.user_data["vip_pending_days"] = days
+        context.user_data["keyboard_state"] = "WAITING_VIP_RECEIPT"
+
+        qris_url = "https://kqixzfnndcqgyhkvclsu.supabase.co/storage/v1/object/public/Foto/Tak%20berjudul329_20260712120349.png"
+        
+        caption = (
+            f"🛒 *Checkout VIP {dur_text}*\n\n"
+            f"Total yang harus dibayar: *Rp {total_bayar}*\n\n"
+            f"⚠️ *PENTING:* Wajib masukkan angka `{kode_unik}` di bagian *Catatan/Berita Acara* saat transfer!\n\n"
+            f"📸 Jika sudah transfer, silakan *kirim foto bukti pembayaran* ke sini sekarang (ketik /cancel untuk membatalkan)."
+        )
+        await query.message.reply_photo(photo=qris_url, caption=caption, parse_mode="Markdown")
 
 # === FITUR LEADERBOARD ===
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,15 +376,32 @@ async def buy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ Gagal! Nama title maksimal 16 karakter ya.")
 
     try:
-        response = await db(lambda: supabase.table("users").select("kith_coins").eq("user_id", user_id).execute())
-        current_balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+        # 1. Ambil koin dan status VIP sekaligus
+        response = await db(lambda: supabase.table("users").select("kith_coins, is_vip, vip_until").eq("user_id", user_id).execute())
+        row = response.data[0] if response.data else {}
+        
+        current_balance = row.get("kith_coins") or 0
+        is_vip = row.get("is_vip", False)
+        vip_until_str = row.get("vip_until")
+        
+        # 2. Validasi apakah VIP masih aktif
+        if is_vip and vip_until_str:
+            vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > vip_until_dt:
+                is_vip = False # VIP sudah expired
+        
+        # 3. Tentukan harga (Diskon 50% kalau VIP)
+        actual_price = TITLE_PRICE // 2 if is_vip else TITLE_PRICE
 
-        if current_balance < TITLE_PRICE:
-            return await update.message.reply_text(f"❌ Kith-Coins kamu tidak cukup.\nSaldo kamu: {current_balance} Coins\nHarga Title: {TITLE_PRICE} Coins")
+        if current_balance < actual_price:
+            promo = "\n\n💡 *Koin kurang?* Upgrade 💎 Premium aja biar dapet diskon 50% sekaligus bonus 5000 koin!" if not is_vip else ""
+            return await update.message.reply_text(
+                f"❌ Kith-Coins kamu tidak cukup.\nSaldo kamu: {current_balance} Coins\nHarga Title: {actual_price} Coins{promo}",
+                reply_markup=get_main_keyboard()
+            )
 
-        new_balance = current_balance - TITLE_PRICE
+        new_balance = current_balance - actual_price
         await db(lambda: supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute())
-
         try:
             await context.bot.set_chat_member_tag(
                 chat_id=GROUP_ID_DISKUSI,
@@ -365,13 +436,31 @@ async def _apply_title_purchase(update: Update, context: ContextTypes.DEFAULT_TY
         return await update.message.reply_text("❌ Gagal! Nama title maksimal 16 karakter ya.", reply_markup=get_main_keyboard())
 
     try:
-        response = await db(lambda: supabase.table("users").select("kith_coins").eq("user_id", user_id).execute())
-        current_balance = response.data[0].get("kith_coins") if hasattr(response, 'data') and response.data and response.data[0].get("kith_coins") is not None else 0
+        # 1. Ambil koin dan status VIP sekaligus
+        response = await db(lambda: supabase.table("users").select("kith_coins, is_vip, vip_until").eq("user_id", user_id).execute())
+        row = response.data[0] if response.data else {}
+        
+        current_balance = row.get("kith_coins") or 0
+        is_vip = row.get("is_vip", False)
+        vip_until_str = row.get("vip_until")
+        
+        # 2. Validasi apakah VIP masih aktif
+        if is_vip and vip_until_str:
+            vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > vip_until_dt:
+                is_vip = False # VIP sudah expired
+        
+        # 3. Tentukan harga (Diskon 50% kalau VIP)
+        actual_price = TITLE_PRICE // 2 if is_vip else TITLE_PRICE
 
-        if current_balance < TITLE_PRICE:
-            return await update.message.reply_text(f"❌ Kith-Coins kamu tidak cukup.\nSaldo kamu: {current_balance} Coins\nHarga Title: {TITLE_PRICE} Coins", reply_markup=get_main_keyboard())
+        if current_balance < actual_price:
+            promo = "\n\n💡 *Koin kurang?* Upgrade 💎 Premium aja biar dapet diskon 50% sekaligus bonus 5000 koin!" if not is_vip else ""
+            return await update.message.reply_text(
+                f"❌ Kith-Coins kamu tidak cukup.\nSaldo kamu: {current_balance} Coins\nHarga Title: {actual_price} Coins{promo}",
+                reply_markup=get_main_keyboard()
+            )
 
-        new_balance = current_balance - TITLE_PRICE
+        new_balance = current_balance - actual_price
         await db(lambda: supabase.table("users").update({"kith_coins": new_balance}).eq("user_id", user_id).execute())
 
         try:
@@ -914,6 +1003,39 @@ async def handle_pesan(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
 
+    # --- TANGKAP BUKTI TF VIP ---
+    if keyboard_state == "WAITING_VIP_RECEIPT":
+        if update.message.text == "❌ Cancel" or update.message.text == "/cancel":
+            context.user_data.clear()
+            await update.message.reply_text("✅ Pembelian VIP dibatalkan.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+
+        if not update.message.photo and not update.message.document:
+            await update.message.reply_text("❌ Tolong kirimkan FOTO bukti pembayaran ya! (Atau ketik /cancel)")
+            return ConversationHandler.END
+
+        pending_days = context.user_data.get("vip_pending_days", 30)
+        
+        # Kirim tiket ke grup admin
+        keyboard_admin = [
+            [InlineKeyboardButton("✅ Acc VIP", callback_data=f"vipacc|{user_id}|{pending_days}")],
+            [InlineKeyboardButton("❌ Tolak", callback_data=f"viprej|{user_id}")]
+        ]
+        
+        await context.bot.copy_message(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=TOPIC_ID_VIP_LOG,
+            from_chat_id=user_id,
+            message_id=update.message.message_id,
+            caption=f"🚨 *REVIEW BUKTI TF VIP*\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n⏳ Paket: {pending_days} Hari",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard_admin)
+        )
+        
+        context.user_data.clear()
+        await update.message.reply_text("⏳ Bukti pembayaran berhasil dikirim! Silakan tunggu admin memverifikasi. (Kamu sudah kembali ke mode menfess biasa)", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
     # --- LOGIKA TOMBOL MAIN KEYBOARD ---
     if update.message.text == "👤 Profile":
         await cek_profile(update, context)
@@ -921,8 +1043,26 @@ async def handle_pesan(update: Update, context: CallbackContext):
 
     if update.message.text == "💬 Beli title":
         context.user_data["keyboard_state"] = KEYBOARD_STATE_TITLE
+        
+        # Ambil status VIP buat nampilin harga yang pas
+        is_vip = False
+        try:
+            res = await db(lambda: supabase.table("users").select("is_vip, vip_until").eq("user_id", user_id).execute())
+            if res.data:
+                is_vip = res.data[0].get("is_vip", False)
+                vip_until_str = res.data[0].get("vip_until")
+                if is_vip and vip_until_str:
+                    vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > vip_until_dt:
+                        is_vip = False
+        except Exception:
+            pass
+
+        harga = TITLE_PRICE // 2 if is_vip else TITLE_PRICE
+        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade 💎 Premium di menu Profile buat dapet diskon 50% (Harga VIP cuma *{TITLE_PRICE // 2} Coins*)!"
+
         await update.message.reply_text(
-            f"🛒 *Beli Custom Title*\nHarga: *{TITLE_PRICE} Kith-Coins*.\n\nKetik *Nama Title Barumu* (Maks 16 karakter):",
+            f"🛒 *Beli Custom Title*\nHarga: *{harga} Kith-Coins*.\n\nKetik *Nama Title Barumu* (Maks 16 karakter):{promo}",
             parse_mode="Markdown",
             reply_markup=get_cancel_keyboard()
         )
@@ -930,8 +1070,26 @@ async def handle_pesan(update: Update, context: CallbackContext):
 
     if update.message.text == "📸 Photo live":
         context.user_data["keyboard_state"] = KEYBOARD_STATE_LIVE
+        
+        # Ambil status VIP buat nampilin harga yang pas
+        is_vip = False
+        try:
+            res = await db(lambda: supabase.table("users").select("is_vip, vip_until").eq("user_id", user_id).execute())
+            if res.data:
+                is_vip = res.data[0].get("is_vip", False)
+                vip_until_str = res.data[0].get("vip_until")
+                if is_vip and vip_until_str:
+                    vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > vip_until_dt:
+                        is_vip = False
+        except Exception:
+            pass
+
+        harga = LIVE_PHOTO_PRICE // 2 if is_vip else LIVE_PHOTO_PRICE
+        promo = "" if is_vip else f"\n\n💡 *Tips Hemat:* Upgrade 💎 Premium di menu Profile buat dapet diskon 50% (Harga VIP cuma *{LIVE_PHOTO_PRICE // 2} Coins*)!"
+
         await update.message.reply_text(
-            f"📸 *Buat Photo Live*\nBiaya: *{LIVE_PHOTO_PRICE} Kith-Coins*\n\nKirim/forward videonya ke sini (maks {LIVE_MAX_DURATION:.0f} detik, input maksimal {LIVE_MAX_INPUT_FILE_SIZE_MB} MB).",
+            f"📸 *Buat Photo Live*\nBiaya: *{harga} Kith-Coins*\n\nKirim/forward videonya ke sini (maks {LIVE_MAX_DURATION:.0f} detik, input maksimal {LIVE_MAX_INPUT_FILE_SIZE_MB} MB).{promo}",
             parse_mode="Markdown",
             reply_markup=get_cancel_keyboard()
         )
@@ -1062,23 +1220,46 @@ async def handle_pesan(update: Update, context: CallbackContext):
         
     # --- PROSES MENFESS ---
     elif MENFESS_MODE == "auto":
-        # --- 1. CEK COOLDOWN SENDER ID VIA SUPABASE ---
+        # --- 1. CEK VIP SENDER UNTUK COOLDOWN ---
+        is_vip = False
         try:
-            # Ambil 1 data menfess terakhir dari user ini
+            res_user = await db(lambda: supabase.table("users").select("is_vip, vip_until").eq("user_id", user_id).execute())
+            if res_user.data:
+                is_vip = res_user.data[0].get("is_vip", False)
+                vip_until_str = res_user.data[0].get("vip_until")
+                
+                if is_vip and vip_until_str:
+                    vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > vip_until_dt:
+                        is_vip = False
+        except Exception as e:
+            logger.error(f"Gagal cek VIP sender: {e}")
+
+        # Tentukan Cooldown (VIP 30 Menit = 1800 detik, Reguler 2 Jam = 7200 detik)
+        cooldown_limit = 1800 if is_vip else 7200
+        context.user_data['is_vip'] = is_vip
+        
+        # --- 2. CEK COOLDOWN SENDER ID VIA SUPABASE ---
+        try:
             res_sender = await db(lambda: supabase.table("menfess_map").select("created_at").eq("sender_user_id", user_id).order("created_at", desc=True).limit(1).execute())
             
             if hasattr(res_sender, 'data') and res_sender.data:
-                # Parsing string ISO 8601 dari Supabase ke datetime Python
                 last_sent_str = res_sender.data[0]['created_at']
-                # Konversi string Z (UTC) ke format yang bisa dibaca datetime
                 last_sent_dt = datetime.fromisoformat(last_sent_str.replace("Z", "+00:00"))
                 now_utc = datetime.now(timezone.utc)
                 
                 selisih_detik = (now_utc - last_sent_dt).total_seconds()
                 
-                if selisih_detik < 7200: # 7200 detik = 2 Jam
-                    sisa_menit = int((7200 - selisih_detik) / 60)
-                    await update.message.reply_text(f"⏳ Ups! Kamu masih dalam masa cooldown 2 jam. Silakan kirim menfess lagi dalam {sisa_menit} menit.")
+                if selisih_detik < cooldown_limit:
+                    sisa_menit = int((cooldown_limit - selisih_detik) / 60)
+                    if is_vip:
+                        await update.message.reply_text(f"⏳ Ups! Kamu masih dalam masa cooldown 💎 VIP. Silakan kirim menfess lagi dalam {sisa_menit} menit.")
+                    else:
+                        await update.message.reply_text(
+                            f"⏳ Ups! Kamu masih dalam masa cooldown 2 jam. Sisa waktu: *{sisa_menit} menit*.\n\n"
+                            f"💡 *Bosan nunggu lama?* Yuk upgrade 💎 VIP biar cooldown-nya cuma 30 menit! Cek paketnya di menu *👤 Profile*.",
+                            parse_mode="Markdown"
+                        )
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Gagal cek cooldown sender: {e}")
@@ -1230,9 +1411,16 @@ async def handle_username(update: Update, context: CallbackContext):
         new_balance = await add_kith_coins(user_id, 50)
         coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
         
-        # Reply ke user
+       # Reply ke user
+        is_vip = context.user_data.get('is_vip', False)
+        vip_promo = "" if is_vip else "\n\n💡 *Tips:* Upgrade 💎 Premium di menu Profile biar nunggu cooldown selanjutnya cuma 30 menit! 🚀"
+
         keyboard_user = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
-        await update.message.reply_text(f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard_user), parse_mode="Markdown")
+        await update.message.reply_text(
+            f"Pesan kamu telah dikirim ke channel! 🪶{coin_msg}{vip_promo}", 
+            reply_markup=InlineKeyboardMarkup(keyboard_user), 
+            parse_mode="Markdown"
+        )
 
         # Simpan ke DB
         try:
@@ -2831,23 +3019,34 @@ async def live_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     current_balance = 0
     charged = False
     try:
-        res = await db(lambda: supabase.table("users").select("kith_coins").eq("user_id", user_id).execute())
-        current_balance = res.data[0].get("kith_coins") if res.data and res.data[0].get("kith_coins") is not None else 0
+        res = await db(lambda: supabase.table("users").select("kith_coins, is_vip, vip_until").eq("user_id", user_id).execute())
+        row = res.data[0] if res.data else {}
+        
+        current_balance = row.get("kith_coins") or 0
+        is_vip = row.get("is_vip", False)
+        vip_until_str = row.get("vip_until")
+        
+        # 2. Validasi VIP
+        if is_vip and vip_until_str:
+            vip_until_dt = datetime.fromisoformat(vip_until_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > vip_until_dt:
+                is_vip = False
+                
+        # 3. Tentukan harga (Diskon 50%)
+        actual_price = LIVE_PHOTO_PRICE // 2 if is_vip else LIVE_PHOTO_PRICE
 
-        if LIVE_PHOTO_PRICE > 0 and current_balance < LIVE_PHOTO_PRICE:
+        if actual_price > 0 and current_balance < actual_price:
+            promo = "\n\n💡 *Koin kurang?* Upgrade 💎 Premium aja biar dapet diskon 50% sekaligus bonus 5000 koin!" if not is_vip else ""
             return await msg.reply_text(
-                f"❌ Kith-Coins kurang (Biaya: {LIVE_PHOTO_PRICE} Coins). Saldo: {current_balance}",
+                f"❌ Kith-Coins kurang (Biaya: {actual_price} Coins). Saldo: {current_balance}{promo}",
                 reply_markup=get_main_keyboard(),
             )
 
-        if LIVE_PHOTO_PRICE > 0:
-            await db(lambda: supabase.table("users").update({"kith_coins": current_balance - LIVE_PHOTO_PRICE}).eq("user_id", user_id).execute())
+        if actual_price > 0:
+            await db(lambda: supabase.table("users").update({"kith_coins": current_balance - actual_price}).eq("user_id", user_id).execute())
             charged = True
-    except Exception as e:
-        logger.error(f"Gagal mengecek/memotong saldo Live Photo: {e}")
-        return await msg.reply_text("❌ Gagal mengecek saldo.", reply_markup=get_main_keyboard())
-
-    charge_text = f" *(Saldo dipotong {LIVE_PHOTO_PRICE} Coins)*" if LIVE_PHOTO_PRICE > 0 else ""
+            
+    charge_text = f" *(Saldo dipotong {actual_price} Coins)*" if actual_price > 0 else ""
     status_msg = await msg.reply_text(
         f"⏳ Memproses Live Photo...{charge_text}\nTahap 1/4: download video",
         parse_mode="Markdown",
@@ -3154,6 +3353,42 @@ async def break_all_anon(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error di break_all_anon: {e}")
         await status_msg.edit_text(f"❌ Terjadi kesalahan saat eksekusi: `{e}`", parse_mode="Markdown")
+
+async def handle_vip_admin(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split("|")
+    action = data[0]
+    target_id = int(data[1])
+
+    if action == "vipacc":
+        days = int(data[2])
+        # Kalau lifetime, bikin tahun 2099 aja hehe
+        vip_until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat() if days < 9000 else "2099-12-31T23:59:59+00:00"
+        
+        try:
+            # 1. Update status VIP
+            await db(lambda: supabase.table("users").update({"is_vip": True, "vip_until": vip_until}).eq("user_id", target_id).execute())
+            # 2. Kasih bonus 5000 koin
+            await add_kith_coins(target_id, 5000)
+            
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\n✅ *STATUS: DISETUJUI*", parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="🎉 *SELAMAT! Pembayaran VIP kamu telah disetujui!*\n\nStatus Premium kamu sudah aktif dan kamu mendapatkan bonus instan 💰 *5000 Kith-Coins*!\n\nSelamat menikmati diskon 50% dan cooldown menfess yang jauh lebih singkat! 🚀",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Gagal acc VIP: {e}")
+            await query.message.reply_text("❌ Database error saat ACC VIP.")
+            
+    elif action == "viprej":
+        await query.edit_message_caption(caption=f"{query.message.caption}\n\n❌ *STATUS: DITOLAK*", parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="⚠️ *Pembelian VIP Ditolak*\n\nMaaf, bukti pembayaran kamu tidak valid atau dana belum masuk. Jika merasa ini kesalahan, silakan hubungi admin.",
+            parse_mode="Markdown"
+        )
 
 async def send_admin_log(context: CallbackContext, action: str, admin_user, details: str):
     if LOG_GROUP_ID == 0: return
@@ -3560,6 +3795,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_boardrep_callback, pattern=r"^brep\|"))
     application.add_handler(CallbackQueryHandler(handle_delete_vote, pattern=r"^delvote\|"))
     application.add_handler(CallbackQueryHandler(handle_broadcast_delete_callback, pattern=r"^delbc\|"))
+    application.add_handler(CallbackQueryHandler(handle_vip_admin, pattern=r"^vip(acc|rej)\|"))
+    application.add_handler(CallbackQueryHandler(handle_vip_menu, pattern=r"^(buy_vip_menu|vip_dur_)"))
     
     application.add_handler(MessageHandler(filters.ALL & filters.Chat([ADMIN_GROUP_ID, LOG_GROUP_ID]), handle_admin_reply))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_channel_update))
