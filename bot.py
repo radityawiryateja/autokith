@@ -295,15 +295,14 @@ async def handle_vip_menu(update: Update, context: CallbackContext):
 
     if query.data.startswith("vip_dur_"):
         days = int(query.data.split("_")[2])
-        
         price = 5000 if days == 30 else 12000 if days == 90 else 45000
         dur_text = "1 Bulan" if days == 30 else "3 Bulan" if days == 90 else "Lifetime"
         
-        # Bikin kode unik 3 digit
+        # Bikin kode unik 3 digit buat kode booking aja
         kode_unik = random.randint(100, 999)
-        total_bayar = price + kode_unik
 
-        # Simpan state ke context
+        formatted_price = f"{price:,}".replace(",", ".")
+
         context.user_data["vip_pending_days"] = days
         context.user_data["keyboard_state"] = "WAITING_VIP_RECEIPT"
 
@@ -311,8 +310,8 @@ async def handle_vip_menu(update: Update, context: CallbackContext):
         
         caption = (
             f"🛒 *Checkout VIP {dur_text}*\n\n"
-            f"Total yang harus dibayar: *Rp {total_bayar}*\n\n"
-            f"⚠️ *PENTING:* Wajib masukkan angka `{kode_unik}` di bagian *Catatan/Berita Acara* saat transfer!\n\n"
+            f"Total yang harus dibayar: *Rp {formatted_price}*\n\n"
+            f"⚠️ *PENTING:* Wajib ketik kode `{kode_unik}` di bagian *Catatan/Berita Acara/Pesan* saat transfer!\n\n"
             f"📸 Jika sudah transfer, silakan *kirim foto bukti pembayaran* ke sini sekarang (ketik /cancel untuk membatalkan)."
         )
         await query.message.reply_photo(photo=qris_url, caption=caption, parse_mode="Markdown")
