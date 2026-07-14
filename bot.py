@@ -1397,12 +1397,19 @@ async def handle_username(update: Update, context: CallbackContext):
     final_entities = original_entities + [invisible_link]
 
     try:
+        # Paksa Telegram untuk menampilkan preview HANYA dari link target
+        target_url = f"https://t.me/{target_username}"
+        link_opts = LinkPreviewOptions(
+            is_disabled=False, 
+            url=target_url  # <--- Bagian ini yang memaksa preview muncul
+        )
+
         # Kirim ke Channel
         message_sent = await context.bot.send_message(
             chat_id=CHANNEL_ID, 
             text=final_text, 
             entities=final_entities, 
-            link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
+            link_preview_options=link_opts
         )
         CACHE_COMSECT_OFF.add(message_sent.message_id)
         
