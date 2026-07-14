@@ -1386,22 +1386,22 @@ async def handle_username(update: Update, context: CallbackContext):
         logger.error(f"Gagal cek cooldown target: {e}")
         
     teks_asli = context.user_data.get('teks_menfess', "")
-    
-    # FIX: Ubah menjadi list agar bisa digabungkan dengan list [invisible_link]
     original_entities = list(context.user_data.get('entities', []))
 
-    final_text = teks_asli + "\u200B"
+    # 1. Ganti \u200B dengan spasi biasa agar tidak dianggap spam oleh Telegram
+    final_text = teks_asli + " " 
     offset = len(teks_asli.encode('utf-16-le')) // 2
 
-    invisible_link = MessageEntity(type=MessageEntity.TEXT_LINK, offset=offset, length=1, url=f"https://t.me/{target_username}")
+    target_url = f"https://t.me/{target_username}"
+    invisible_link = MessageEntity(type=MessageEntity.TEXT_LINK, offset=offset, length=1, url=target_url)
     final_entities = original_entities + [invisible_link]
 
     try:
-        # Paksa Telegram untuk menampilkan preview HANYA dari link target
-        target_url = f"https://t.me/{target_username}"
+        # 2. Hapus prefer_large_media karena foto profil adalah media kecil (thumbnail)
+        # 3. Paksa url target di LinkPreviewOptions
         link_opts = LinkPreviewOptions(
             is_disabled=False, 
-            url=target_url  # <--- Bagian ini yang memaksa preview muncul
+            url=target_url 
         )
 
         # Kirim ke Channel
