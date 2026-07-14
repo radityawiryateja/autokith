@@ -739,14 +739,14 @@ async def start(update: Update, context: CallbackContext):
     if await check_subscription(user_id, context):
         await update.message.reply_text(
             "Halo Kens, selamat datang di *Kitheons*! ☕️\n\n"
-            "𔐼 *Kitheons:* [@kitheons](https://t.me/kitheons)\n"
-            "𔐼 *Ch Arsip:* [@kithives](https://t.me/kithives)\n\n"
+            "𔐼 *Kitheons:* [@kitheons](https://telegram.me/kitheons)\n"
+            "𔐼 *Ch Arsip:* [@kithives](https://telegram.me/kithives)\n\n"
             "Ketuk /menu untuk menampilkan navigasi.\n"
             "*(Semua pesan yang kamu kirim otomatis diajukan sebagai menfess)*",
             parse_mode="Markdown", reply_markup=get_main_keyboard()
         )
     else:
-        keyboard = [[InlineKeyboardButton("Join Channels", url=f"https://t.me/{c[1:]}")] for c in required_channels]
+        keyboard = [[InlineKeyboardButton("Join Channels", url=f"https://telegram.me/{c[1:]}")] for c in required_channels]
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
 
@@ -898,7 +898,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             return ConversationHandler.END
 
     if not await check_subscription(user_id, context):
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{c[1:]}")] for c in required_channels]
+        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://telegram.me/{c[1:]}")] for c in required_channels]
         await update.message.reply_text("Sebelum lanjut, silakan join channel berikut dulu ya!", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
         return ConversationHandler.END
 
@@ -1187,7 +1187,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             coin_msg = f"\n💰 *+50 Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
             
             # Tombol reply ke user tetap pakai Markdown tidak apa-apa karena ini teks statis dari bot
-            keyboard_user = [[InlineKeyboardButton("⚖️ Lihat Kasus Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")]]
+            keyboard_user = [[InlineKeyboardButton("⚖️ Lihat Kasus Kamu", url=f"https://telegram.me/{CHANNEL_ID[1:]}/{msg.message_id}")]]
             await update.message.reply_text(
                 f"✅ Kasusmu berhasil diajukan ke pengadilan channel!{coin_msg}", 
                 reply_markup=InlineKeyboardMarkup(keyboard_user), 
@@ -1198,7 +1198,7 @@ async def handle_pesan(update: Update, context: CallbackContext):
             log_msg = f"📌 <b>Log Menfess (CORT):</b>\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: <code>{user_id}</code>\n💬 Kasus: {cerita_html}"
             
             keyboard_log = [
-                [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{msg.message_id}")],
+                [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://telegram.me/{CHANNEL_ID[1:]}/{msg.message_id}")],
                 [InlineKeyboardButton("❌ Hapus & Tegur", callback_data=f"del_{user_id}_{msg.message_id}")]
             ]
             
@@ -1392,7 +1392,7 @@ async def handle_username(update: Update, context: CallbackContext):
     final_text = teks_asli + " " 
     offset = len(teks_asli.encode('utf-16-le')) // 2
 
-    target_url = f"https://t.me/{target_username}"
+    target_url = f"https://telegram.me/{target_username}"
     invisible_link = MessageEntity(type=MessageEntity.TEXT_LINK, offset=offset, length=1, url=target_url)
     final_entities = original_entities + [invisible_link]
 
@@ -1421,7 +1421,7 @@ async def handle_username(update: Update, context: CallbackContext):
         is_vip = context.user_data.get('is_vip', False)
         vip_promo = "" if is_vip else "\n\n💡 *Tips:* Upgrade ke Premium di menu Profile biar nunggu cooldown selanjutnya cuma 30 menit! 🚀"
 
-        keyboard_user = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
+        keyboard_user = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://telegram.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")]]
         await update.message.reply_text(
             f"Pesan kamu telah dikirim ke channel!{coin_msg}{vip_promo}", 
             reply_markup=InlineKeyboardMarkup(keyboard_user), 
@@ -1438,7 +1438,7 @@ async def handle_username(update: Update, context: CallbackContext):
         log_msg = f"📌 Log Menfess (AUTO):\n🕰️ Waktu: {update.message.date}\n👤 Pengirim: {display_name}\n🆔 ID: `{user_id}`\n🔗 Username Target: @{target_username}\n💬 Pesan: {teks_asli}"
         
         keyboard_log = [
-            [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://t.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")],
+            [InlineKeyboardButton("🔍 Lihat Pesan", url=f"https://telegram.me/{CHANNEL_ID[1:]}/{message_sent.message_id}")],
             [InlineKeyboardButton("❌ Hapus & Tegur", callback_data=f"del_{user_id}_{message_sent.message_id}")]
         ]
         
@@ -1515,7 +1515,7 @@ async def handle_callback_review(update: Update, context: CallbackContext):
                 )
 
                 coin_msg = f"\n💰 *+{earned_coins} Kith-Coins!* (Saldo: {new_balance})" if new_balance is not None else ""
-                keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://t.me/{CHANNEL_ID[1:]}/{sent_msg.message_id}")]]
+                keyboard = [[InlineKeyboardButton("Lihat Pesan Kamu", url=f"https://telegram.me/{CHANNEL_ID[1:]}/{sent_msg.message_id}")]]
                 await context.bot.send_message(chat_id=user_id, text=f"✅ Yay! Menfess kamu telah disetujui admin! ({status_text}){coin_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Gagal publish manual menfess: {e}")
@@ -1775,7 +1775,7 @@ async def handle_discussion(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 post_id = response.data[0]["post_id"]
 
                 commenter = f"{msg.from_user.first_name} (@{msg.from_user.username})" if msg.from_user.username else msg.from_user.first_name
-                link = f"https://t.me/{CHANNEL_ID.lstrip('@')}/{post_id}?comment={msg.message_id}"
+                link = f"https://telegram.me/{CHANNEL_ID.lstrip('@')}/{post_id}?comment={msg.message_id}"
 
                 notif_text = (
                     f"📬 {commenter} berkomentar di menfess kamu!\n\n"
@@ -2195,14 +2195,14 @@ async def submit_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_discussion_link(comment_msg_id: int, thread_id: int = None):
     """Buat link publik ke komentar diskusi."""
-    fallback = f"https://t.me/c/{str(GROUP_ID_DISKUSI).replace('-100', '')}/{comment_msg_id}"
+    fallback = f"https://telegram.me/c/{str(GROUP_ID_DISKUSI).replace('-100', '')}/{comment_msg_id}"
     try:
         lookup_id = thread_id or comment_msg_id
         map_res = await db(lambda: supabase.table("menfess_map").select("post_id").eq("discussion_message_id", lookup_id).execute())
         if hasattr(map_res, 'data') and map_res.data:
             post_id = map_res.data[0]['post_id']
             channel_username = CHANNEL_ID.replace('@', '')
-            return f"https://t.me/{channel_username}/{post_id}?comment={comment_msg_id}"
+            return f"https://telegram.me/{channel_username}/{post_id}?comment={comment_msg_id}"
     except Exception as e:
         logger.error(f"Gagal membuat link diskusi: {e}")
     return fallback
@@ -3550,7 +3550,7 @@ async def poll_btn_text_received(update: Update, context: ContextTypes.DEFAULT_T
     }
     
     bot_me = await context.bot.get_me()
-    deep_link = f"https://t.me/{bot_me.username}?start=poll_{poll_id}"
+    deep_link = f"https://telegram.me/{bot_me.username}?start=poll_{poll_id}"
     keyboard = [[InlineKeyboardButton(btn_text, url=deep_link)]]
     
     text_awal = f"📊 *{judul}*\n\n_Belum ada suara._"
@@ -3596,7 +3596,7 @@ async def update_poll_board(context: ContextTypes.DEFAULT_TYPE):
             text += f"*{v['name']}:* {v['text']}\n"
         
     bot_me = await context.bot.get_me()
-    deep_link = f"https://t.me/{bot_me.username}?start=poll_{poll_id}"
+    deep_link = f"https://telegram.me/{bot_me.username}?start=poll_{poll_id}"
     keyboard = [[InlineKeyboardButton(poll['btn_text'], url=deep_link)]]
     
     try:
