@@ -11,6 +11,9 @@ import shutil
 import asyncio
 import httpx
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes, CallbackContext, TypeHandler
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, LinkPreviewOptions, MessageEntity, ChatMemberUpdated, ChatMember
 from supabase import create_client
